@@ -8,5 +8,11 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 efinance==0.5.8
 pandas==2.2.3
+numpy==1.26.4
+requests==2.32.3
+chardet==5.2.0
+PyMuPDF==1.24.10
+opencv-python==4.6.0.66
+rapidocr-onnxruntime==1.4.4
 pytest==8.3.4
 httpx==0.28.1

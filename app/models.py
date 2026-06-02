@@ -19,6 +19,28 @@ class TransactionAction(str, Enum):
     fee_adjustment = "fee_adjustment"
 
 
+class ImportStatus(str, Enum):
+    uploaded = "uploaded"
+    ocr_running = "ocr_running"
+    ocr_done = "ocr_done"
+    parse_done = "parse_done"
+    error = "error"
+
+
+class ImportDocument(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    file_name: Optional[str] = None
+    source_file: Optional[str] = None
+    source_hash: Optional[str] = Field(default=None, index=True)
+    content_type: Optional[str] = None
+    status: ImportStatus = Field(default=ImportStatus.uploaded, index=True)
+    raw_text: str = ""
+    ocr_text: str = ""
+    error_message: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class FundTransactionCandidate(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     status: CandidateStatus = Field(default=CandidateStatus.pending, index=True)

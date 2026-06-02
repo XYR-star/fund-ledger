@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}导入 #{{ document.id }} - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>导入 #{{ document.id }}</h1>
+    <p class="muted">{{ document.file_name or "手动文本" }} · {{ document.status.value }}</p>
+  </div>
+  <a class="btn" href="/imports">返回导入列表</a>
+</div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+{% if document.error_message %}<section class="panel error">{{ document.error_message }}</section>{% endif %}
+
+<section class="panel stack">
+  <h2>文件与动作</h2>
+  <div class="actions">
+    {% if document.source_file %}
+    <form method="post" action="/imports/{{ document.id }}/ocr">
+      <button class="btn primary" type="submit">运行本地 OCR</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/imports/{{ document.id }}/parse">
+      <button class="btn" type="submit">规则解析为候选</button>
+    </form>
+    <form method="post" action="/imports/{{ document.id }}/parse">
+      <input type="hidden" name="use_llm" value="true">
+      <button class="btn" type="submit" {% if not llm_configured %}disabled{% endif %}>DeepSeek 解析</button>
+    </form>
+  </div>
+  {% if not llm_configured %}
+  <p class="muted">DeepSeek 尚未配置。需要在 `/etc/fund-ledger.env` 加 `DEEPSEEK_API_KEY` 后重启服务。</p>
+  {% endif %}
+</section>
+
+<section class="panel stack" style="margin-top:16px">
+  <h2>文本</h2>
+  <form class="stack" method="post" action="/imports/{{ document.id }}/text">
+    <label>手动文本
+      <textarea name="raw_text">{{ document.raw_text }}</textarea>
+    </label>
+    <label>OCR / LLM 文本
+      <textarea name="ocr_text">{{ document.ocr_text }}</textarea>
+    </label>
+    <div class="actions">
+      <button class="btn primary" type="submit">保存文本</button>
+      <a class="btn" href="/candidates">查看候选</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

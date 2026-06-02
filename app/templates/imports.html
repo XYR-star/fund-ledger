@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}导入 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>导入文档</h1>
+    <p class="muted">上传文件、OCR 和解析状态。</p>
+  </div>
+  <a class="btn primary" href="/upload">上传</a>
+</div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>文本长度</th><th>更新时间</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for doc in documents %}
+      <tr>
+        <td>{{ doc.id }}</td>
+        <td>{{ doc.file_name or "手动文本" }}</td>
+        <td><span class="badge">{{ doc.status.value }}</span></td>
+        <td>{{ (doc.ocr_text or doc.raw_text)|length }}</td>
+        <td>{{ doc.updated_at }}</td>
+        <td><a class="btn" href="/imports/{{ doc.id }}">打开</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">暂无导入文档。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

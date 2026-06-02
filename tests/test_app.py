@@ -117,3 +117,37 @@ def test_backup_export(client):
     data = response.json()
     assert data["version"] == 1
     assert data["transactions"][0]["fund_code"] == "005827"
+    assert data["imports"][0]["raw_text"]
+
+
+def test_ocr_import_to_candidate_flow(client, monkeypatch):
+    import app.main
+    from app.ocr import OcrResult
+
+    login(client)
+    monkeypatch.setattr(
+        app.main,
+        "recognize_file",
+        lambda _: OcrResult(
+            text="2024-01-02 161725 招商中证白酒 buy 1000 500 2.0000 0",
+            confidence=0.99,
+        ),
+    )
+    response = client.post(
+        "/upload",
+        files={"file": ("trade.png", b"fake image", "image/png")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/imports/1"
+
+    response = client.post("/imports/1/ocr", follow_redirects=False)
+    assert response.status_code == 303
+    detail = client.get("/imports/1")
+    assert "招商中证白酒" in detail.text
+
+    response = client.post("/imports/1/parse", follow_redirects=False)
+    assert response.status_code == 303
+    page = client.get("/candidates")
+    assert "161725" in page.text
+    assert "pending" in page.text
