@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   --bg: #f6f7f9;
   --panel: #ffffff;
   --ink: #16202a;
@@ -29,6 +29,9 @@
   --table-head: #161b21;
   --input-bg: #111820;
   --badge-bg: #222a33;
+}
+[data-theme="light"] {
+  color-scheme: light;
 }
 * { box-sizing: border-box; }
 body {
@@ -61,6 +64,9 @@ a { color: inherit; text-decoration: none; }
 }
 .nav a:hover, .nav button:hover { background: var(--hover); color: var(--ink); }
 .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 34px;
   height: 34px;
   padding: 0;
@@ -70,6 +76,7 @@ a { color: inherit; text-decoration: none; }
   border-radius: 6px;
   cursor: pointer;
 }
+.theme-toggle { flex: 0 0 34px; }
 .theme-icon {
   width: 18px;
   height: 18px;

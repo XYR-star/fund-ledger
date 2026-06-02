@@ -73,6 +73,15 @@ async def test_login_success(client):
     assert response.headers["location"] == "/"
 
 
+async def test_theme_toggle_is_available_on_pages(client):
+    await login(client)
+    page = await client.get("/")
+    assert 'data-theme-toggle' in page.text
+    assert 'fund-ledger-theme' in page.text
+    assert 'prefers-color-scheme: dark' in page.text
+    assert 'aria-pressed' in page.text
+
+
 async def test_candidate_confirm_flow(client):
     await login(client)
     response = await client.post(
