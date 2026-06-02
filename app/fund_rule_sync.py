@@ -76,19 +76,24 @@ def fetch_fund_rule_from_akshare(fund_code: str) -> SyncedRule:
 def call_with_timeout(func, **kwargs):
     queue = Queue(maxsize=1)
     process = Process(target=_call_worker, args=(func, kwargs, queue))
+    process.daemon = True
     process.start()
-    process.join(AKSHARE_TIMEOUT_SECONDS)
-    if process.is_alive():
-        process.terminate()
-        process.join(2)
-        raise RuntimeError(f"{func.__name__} timed out after {AKSHARE_TIMEOUT_SECONDS}s")
     try:
-        ok, payload = queue.get_nowait()
-    except Empty as exc:
-        raise RuntimeError(f"{func.__name__} returned no result") from exc
-    if ok:
-        return payload
-    raise RuntimeError(str(payload))
+        process.join(AKSHARE_TIMEOUT_SECONDS)
+        if process.is_alive():
+            _stop_process(process)
+            raise RuntimeError(f"{func.__name__} timed out after {AKSHARE_TIMEOUT_SECONDS}s")
+        try:
+            ok, payload = queue.get_nowait()
+        except Empty as exc:
+            raise RuntimeError(f"{func.__name__} returned no result") from exc
+        if ok:
+            return payload
+        raise RuntimeError(str(payload))
+    finally:
+        _stop_process(process)
+        queue.close()
+        queue.join_thread()
 
 
 def _call_worker(func, kwargs, queue):
@@ -96,6 +101,17 @@ def _call_worker(func, kwargs, queue):
         queue.put((True, func(**kwargs)))
     except Exception as exc:
         queue.put((False, exc))
+
+
+def _stop_process(process: Process) -> None:
+    if not process.is_alive():
+        process.join(0)
+        return
+    process.terminate()
+    process.join(2)
+    if process.is_alive():
+        process.kill()
+        process.join(2)
 
 
 def parse_confirm_days(df: Any) -> tuple[int | None, int | None]:

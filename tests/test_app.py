@@ -1,4 +1,5 @@
 from datetime import date
+import asyncio
 
 import httpx
 import pytest
@@ -48,6 +49,16 @@ async def login(client):
         data={"username": "admin", "password": "changeme", "next": "/"},
         follow_redirects=False,
     )
+
+
+async def wait_for_text(client, path, text, attempts=20):
+    response = None
+    for _ in range(attempts):
+        response = await client.get(path)
+        if text in response.text:
+            return response
+        await asyncio.sleep(0.05)
+    return response
 
 
 async def test_requires_login(client):
@@ -154,12 +165,12 @@ async def test_ocr_import_to_candidate_flow(client, monkeypatch):
 
     response = await client.post("/imports/1/ocr", follow_redirects=False)
     assert response.status_code == 303
-    detail = await client.get("/imports/1")
+    detail = await wait_for_text(client, "/imports/1", "招商中证白酒")
     assert "招商中证白酒" in detail.text
 
     response = await client.post("/imports/1/parse", follow_redirects=False)
     assert response.status_code == 303
-    page = await client.get("/candidates")
+    page = await wait_for_text(client, "/candidates", "161725")
     assert "161725" in page.text
     assert "pending" in page.text
 
@@ -367,7 +378,7 @@ async def test_fund_rule_auto_sync_creates_rule_and_tiers(client, monkeypatch):
     )
     response = await client.post("/fund-rules/sync", data={"fund_code": "161725"}, follow_redirects=False)
     assert response.status_code == 303
-    page = await client.get("/fund-rules")
+    page = await wait_for_text(client, "/fund-rules", "卖出 T+2")
     assert "招商中证白酒" in page.text
     assert "买入 T+1" in page.text
     assert "卖出 T+2" in page.text

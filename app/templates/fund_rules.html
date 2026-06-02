@@ -18,6 +18,27 @@
   <p class="muted">优先使用 AKShare 的天天基金/东方财富接口，缺失时尝试雪球/蛋卷规则接口；查询失败不会覆盖现有人工规则。</p>
 </section>
 
+{% if jobs %}
+<section class="panel stack">
+  <h2>后台任务</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>状态</th><th>结果</th><th>时间</th></tr></thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>{{ job.id }}</td>
+          <td><span class="badge">{{ job.status.value }}</span></td>
+          <td>{{ job.result_message or job.error_message or "-" }}</td>
+          <td>{{ job.finished_at or job.started_at or job.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 <section class="panel stack">
   <h2>新增或更新规则</h2>
   <form class="form-grid" method="post" action="/fund-rules">

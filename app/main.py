@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -12,11 +13,13 @@ from starlette.status import HTTP_303_SEE_OTHER
 from .app_settings import configured, masked, runtime_settings, save_settings
 from .auth import add_session_middleware, current_user, login_user, logout_user, verify_login
 from .config import ensure_data_dirs, settings
-from .db import get_session, init_db
+from .db import engine, get_session, init_db
 from .extractors import extract_candidates, hash_content, hash_file
 from .fund_rule_sync import fetch_fund_rule_from_akshare, sync_timestamp
+from .jobs import create_and_enqueue, recover_interrupted_jobs, register_job
 from .llm import is_deepseek_configured, parse_with_deepseek
 from .models import (
+    BackgroundJob,
     CandidateStatus,
     AppSetting,
     FundFeeTier,
@@ -42,6 +45,15 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    register_background_jobs()
+    recover_interrupted_jobs()
+
+
+def register_background_jobs() -> None:
+    register_job("ocr_import", process_ocr_job)
+    register_job("parse_import", process_parse_job)
+    register_job("sync_nav", process_nav_job)
+    register_job("sync_fund_rule", process_fund_rule_sync_job)
 
 
 def require_user(request: Request) -> str:
@@ -418,6 +430,244 @@ def parse_positive_int_value(value: Any) -> int | None:
     return parsed if parsed and parsed > 0 else None
 
 
+def process_ocr_job(payload: dict[str, Any]) -> str:
+    document_id = int(payload["document_id"])
+    with Session(engine) as session:
+        document = session.get(ImportDocument, document_id)
+        if not document:
+            raise RuntimeError("导入文档不存在")
+        if not document.source_file:
+            raise RuntimeError("没有可 OCR 的文件")
+        document.status = ImportStatus.ocr_running
+        document.error_message = ""
+        document.updated_at = datetime.utcnow()
+        session.add(document)
+        session.commit()
+        try:
+            result = recognize_file(document.source_file, runtime_settings(session))
+        except Exception as exc:
+            document.status = ImportStatus.error
+            document.error_message = str(exc)
+            document.updated_at = datetime.utcnow()
+            session.add(document)
+            session.commit()
+            raise
+        document.ocr_text = result.text
+        document.status = ImportStatus.ocr_done
+        document.error_message = ""
+        document.updated_at = datetime.utcnow()
+        session.add(document)
+        session.commit()
+        return f"OCR 完成，识别 {len(result.text)} 个字符"
+
+
+def process_parse_job(payload: dict[str, Any]) -> str:
+    document_id = int(payload["document_id"])
+    use_llm = bool(payload.get("use_llm"))
+    with Session(engine) as session:
+        document = session.get(ImportDocument, document_id)
+        if not document:
+            raise RuntimeError("导入文档不存在")
+        text = document.ocr_text or document.raw_text
+        if not text.strip():
+            raise RuntimeError("没有可解析文本")
+
+        parsed_count = 0
+        config = runtime_settings(session)
+        if use_llm and is_deepseek_configured(config):
+            llm_result = parse_with_deepseek(text, config)
+            if llm_result and llm_result.parsed_json:
+                document.ocr_text = llm_result.raw_response
+                parsed_count = create_candidates_from_rows(
+                    session,
+                    llm_result.parsed_json,
+                    source_file=document.source_file,
+                    source_hash=document.source_hash,
+                )
+        if parsed_count == 0:
+            parsed_count = create_candidates_from_text(
+                session,
+                text,
+                source_file=document.source_file,
+                source_hash=document.source_hash,
+            )
+        document.status = ImportStatus.parse_done
+        document.error_message = ""
+        document.updated_at = datetime.utcnow()
+        session.add(document)
+        session.commit()
+        return f"已生成 {parsed_count} 条候选交易"
+
+
+def process_nav_job(payload: dict[str, Any]) -> str:
+    fund_code = str(payload["fund_code"]).zfill(6)
+    with Session(engine) as session:
+        inserted, error = sync_nav_for_fund(session, fund_code)
+        if error:
+            raise RuntimeError(error)
+        return f"{fund_code} 净值同步完成，新增 {inserted} 条"
+
+
+def process_fund_rule_sync_job(payload: dict[str, Any]) -> str:
+    code = str(payload["fund_code"]).zfill(6)
+    synced = fetch_fund_rule_from_akshare(code)
+    with Session(engine) as session:
+        existing = session.get(FundRule, code)
+        rule = existing or FundRule(fund_code=code)
+        rule.fund_name = synced.fund_name or rule.fund_name
+        if synced.buy_confirm_days is not None:
+            rule.buy_confirm_days = synced.buy_confirm_days
+        if synced.sell_confirm_days is not None:
+            rule.sell_confirm_days = synced.sell_confirm_days
+        rule.cutoff_time = synced.cutoff_time or rule.cutoff_time or "15:00"
+        if synced.buy_fee_rate is not None:
+            rule.buy_fee_rate = synced.buy_fee_rate
+        rule.sync_source = synced.source
+        rule.synced_at = sync_timestamp()
+        note_parts = [part for part in [rule.notes, synced.raw_notes] if part]
+        rule.notes = "\n".join(dict.fromkeys(note_parts))
+        rule.updated_at = datetime.utcnow()
+        session.add(rule)
+
+        if synced.fee_tiers:
+            for tier in session.exec(select(FundFeeTier).where(FundFeeTier.fund_code == code)).all():
+                session.delete(tier)
+            for min_days, max_days, rate in synced.fee_tiers:
+                session.add(
+                    FundFeeTier(
+                        fund_code=code,
+                        min_holding_days=min_days,
+                        max_holding_days=max_days,
+                        redemption_fee_rate=rate,
+                        updated_at=datetime.utcnow(),
+                    )
+                )
+        session.commit()
+        return f"{code} 规则同步完成"
+
+
+def backup_counts(payload: dict[str, Any]) -> dict[str, int]:
+    return {
+        key: len(payload.get(key) or [])
+        for key in (
+            "imports",
+            "candidates",
+            "transactions",
+            "nav",
+            "fund_rules",
+            "fund_fee_tiers",
+            "settings",
+        )
+    }
+
+
+def restore_backup_payload(session: Session, payload: dict[str, Any]) -> dict[str, int]:
+    if payload.get("version") != 1:
+        raise ValueError("不支持的备份版本")
+    counts = {key: 0 for key in backup_counts(payload)}
+
+    for item in payload.get("settings") or []:
+        if item.get("is_secret") and item.get("value") == "***":
+            continue
+        setting = session.get(AppSetting, item.get("key")) or AppSetting(key=item.get("key"))
+        for key in ("value", "is_secret"):
+            if key in item:
+                setattr(setting, key, item[key])
+        setting.updated_at = _parse_datetime_value(item.get("updated_at")) or datetime.utcnow()
+        session.add(setting)
+        counts["settings"] += 1
+
+    for item in payload.get("fund_rules") or []:
+        rule = session.get(FundRule, item.get("fund_code")) or FundRule(fund_code=item.get("fund_code"))
+        _apply_fields(rule, item, {"fund_code"})
+        session.add(rule)
+        counts["fund_rules"] += 1
+
+    for item in payload.get("imports") or []:
+        existing = session.get(ImportDocument, item.get("id"))
+        if existing:
+            continue
+        session.add(ImportDocument(**_model_data(item, {"created_at", "updated_at"})))
+        counts["imports"] += 1
+
+    for item in payload.get("candidates") or []:
+        existing = session.get(FundTransactionCandidate, item.get("id"))
+        if existing:
+            continue
+        session.add(FundTransactionCandidate(**_model_data(item, {"trade_date", "confirm_date", "created_at", "updated_at"})))
+        counts["candidates"] += 1
+
+    for item in payload.get("transactions") or []:
+        existing = session.get(FundTransaction, item.get("id"))
+        if existing:
+            continue
+        session.add(FundTransaction(**_model_data(item, {"trade_date", "confirm_date", "created_at"})))
+        counts["transactions"] += 1
+
+    for item in payload.get("fund_fee_tiers") or []:
+        existing = session.get(FundFeeTier, item.get("id"))
+        if existing:
+            continue
+        session.add(FundFeeTier(**_model_data(item, {"updated_at"})))
+        counts["fund_fee_tiers"] += 1
+
+    for item in payload.get("nav") or []:
+        nav_date = parse_date_value(item.get("nav_date"))
+        existing = session.exec(
+            select(FundNav).where(
+                FundNav.fund_code == item.get("fund_code"),
+                FundNav.nav_date == nav_date,
+            )
+        ).first()
+        if existing:
+            _apply_fields(existing, item, {"id", "fund_code", "nav_date", "created_at"})
+            existing.updated_at = datetime.utcnow()
+            session.add(existing)
+        else:
+            session.add(FundNav(**_model_data(item, {"nav_date", "created_at", "updated_at"})))
+        counts["nav"] += 1
+
+    session.commit()
+    return counts
+
+
+def _model_data(item: dict[str, Any], typed_fields: set[str]) -> dict[str, Any]:
+    data = dict(item)
+    for key in typed_fields:
+        if key not in data:
+            continue
+        if key.endswith("_date") or key == "nav_date":
+            data[key] = parse_date_value(data[key])
+        else:
+            data[key] = _parse_datetime_value(data[key])
+    return data
+
+
+def _apply_fields(model: Any, item: dict[str, Any], skip: set[str]) -> None:
+    for key, value in item.items():
+        if key in skip or not hasattr(model, key):
+            continue
+        if key.endswith("_date") or key == "nav_date":
+            value = parse_date_value(value)
+        elif key.endswith("_at"):
+            value = _parse_datetime_value(value)
+        setattr(model, key, value)
+
+
+def _parse_datetime_value(value: Any) -> datetime | None:
+    if value in (None, "", "null"):
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+register_background_jobs()
+
+
 @app.exception_handler(401)
 async def auth_exception_handler(request: Request, exc: HTTPException):
     return redirect(f"/login?next={request.url.path}")
@@ -560,12 +810,18 @@ def fund_rules_page(
 ):
     rules = session.exec(select(FundRule).order_by(FundRule.fund_code)).all()
     tiers = session.exec(select(FundFeeTier).order_by(FundFeeTier.fund_code, FundFeeTier.min_holding_days)).all()
+    jobs = session.exec(
+        select(BackgroundJob)
+        .where(BackgroundJob.job_type == "sync_fund_rule")
+        .order_by(desc(BackgroundJob.created_at))
+        .limit(5)
+    ).all()
     tiers_by_code: dict[str, list[FundFeeTier]] = {}
     for tier in tiers:
         tiers_by_code.setdefault(tier.fund_code, []).append(tier)
     return templates.TemplateResponse(
         "fund_rules.html",
-        {"request": request, "rules": rules, "tiers_by_code": tiers_by_code, "message": message},
+        {"request": request, "rules": rules, "tiers_by_code": tiers_by_code, "message": message, "jobs": jobs},
     )
 
 
@@ -603,43 +859,8 @@ def fund_rule_sync(
     session: Session = Depends(get_session),
 ):
     code = fund_code.zfill(6)
-    try:
-        synced = fetch_fund_rule_from_akshare(code)
-    except Exception as exc:
-        return redirect(f"/fund-rules?message=自动查询失败：{exc}")
-
-    existing = session.get(FundRule, code)
-    rule = existing or FundRule(fund_code=code)
-    rule.fund_name = synced.fund_name or rule.fund_name
-    if synced.buy_confirm_days is not None:
-        rule.buy_confirm_days = synced.buy_confirm_days
-    if synced.sell_confirm_days is not None:
-        rule.sell_confirm_days = synced.sell_confirm_days
-    rule.cutoff_time = synced.cutoff_time or rule.cutoff_time or "15:00"
-    if synced.buy_fee_rate is not None:
-        rule.buy_fee_rate = synced.buy_fee_rate
-    rule.sync_source = synced.source
-    rule.synced_at = sync_timestamp()
-    note_parts = [part for part in [rule.notes, synced.raw_notes] if part]
-    rule.notes = "\n".join(dict.fromkeys(note_parts))
-    rule.updated_at = datetime.utcnow()
-    session.add(rule)
-
-    if synced.fee_tiers:
-        for tier in session.exec(select(FundFeeTier).where(FundFeeTier.fund_code == code)).all():
-            session.delete(tier)
-        for min_days, max_days, rate in synced.fee_tiers:
-            session.add(
-                FundFeeTier(
-                    fund_code=code,
-                    min_holding_days=min_days,
-                    max_holding_days=max_days,
-                    redemption_fee_rate=rate,
-                    updated_at=datetime.utcnow(),
-                )
-            )
-    session.commit()
-    return redirect("/fund-rules?message=自动查询已完成")
+    job = create_and_enqueue(session, "sync_fund_rule", {"fund_code": code})
+    return redirect(f"/fund-rules?message=规则同步已加入后台任务 #{job.id}")
 
 
 @app.post("/fund-rules/{fund_code}/tiers")
@@ -756,6 +977,12 @@ def import_detail_page(
     if not document:
         raise HTTPException(status_code=404)
     config = runtime_settings(session)
+    jobs = session.exec(
+        select(BackgroundJob)
+        .where(BackgroundJob.payload_json.contains(f'"document_id": {document_id}'))
+        .order_by(desc(BackgroundJob.created_at))
+        .limit(5)
+    ).all()
     return templates.TemplateResponse(
         "import_detail.html",
         {
@@ -764,6 +991,7 @@ def import_detail_page(
             "message": message,
             "llm_configured": is_deepseek_configured(config),
             "ocr_backend": config.get("OCR_BACKEND", "rapidocr"),
+            "jobs": jobs,
         },
     )
 
@@ -833,25 +1061,12 @@ def import_run_ocr(
     if not document.source_file:
         return redirect(f"/imports/{document_id}?message=没有可 OCR 的文件")
     document.status = ImportStatus.ocr_running
-    document.updated_at = datetime.utcnow()
-    session.add(document)
-    session.commit()
-    try:
-        result = recognize_file(document.source_file, runtime_settings(session))
-    except Exception as exc:
-        document.status = ImportStatus.error
-        document.error_message = str(exc)
-        document.updated_at = datetime.utcnow()
-        session.add(document)
-        session.commit()
-        return redirect(f"/imports/{document_id}?message=OCR 失败：{exc}")
-    document.ocr_text = result.text
-    document.status = ImportStatus.ocr_done
     document.error_message = ""
     document.updated_at = datetime.utcnow()
     session.add(document)
     session.commit()
-    return redirect(f"/imports/{document_id}?message=OCR 完成")
+    job = create_and_enqueue(session, "ocr_import", {"document_id": document_id})
+    return redirect(f"/imports/{document_id}?message=OCR 已加入后台任务 #{job.id}")
 
 
 @app.post("/imports/{document_id}/text")
@@ -886,31 +1101,11 @@ def import_parse(
     text = document.ocr_text or document.raw_text
     if not text.strip():
         return redirect(f"/imports/{document_id}?message=没有可解析文本")
-
-    parsed_count = 0
-    config = runtime_settings(session)
-    if use_llm and is_deepseek_configured(config):
-        llm_result = parse_with_deepseek(text, config)
-        if llm_result and llm_result.parsed_json:
-            document.ocr_text = llm_result.raw_response
-            parsed_count = create_candidates_from_rows(
-                session,
-                llm_result.parsed_json,
-                source_file=document.source_file,
-                source_hash=document.source_hash,
-            )
-    if parsed_count == 0:
-        parsed_count = create_candidates_from_text(
-            session,
-            text,
-            source_file=document.source_file,
-            source_hash=document.source_hash,
-        )
-    document.status = ImportStatus.parse_done
-    document.updated_at = datetime.utcnow()
+    document.error_message = ""
     session.add(document)
     session.commit()
-    return redirect(f"/imports/{document_id}?message=已生成 {parsed_count} 条候选交易")
+    job = create_and_enqueue(session, "parse_import", {"document_id": document_id, "use_llm": use_llm})
+    return redirect(f"/imports/{document_id}?message=解析已加入后台任务 #{job.id}")
 
 
 @app.get("/candidates", response_class=HTMLResponse)
@@ -1059,8 +1254,14 @@ def nav_page(
         ).first()
         for code in funds
     }
+    jobs = session.exec(
+        select(BackgroundJob)
+        .where(BackgroundJob.job_type == "sync_nav")
+        .order_by(desc(BackgroundJob.created_at))
+        .limit(5)
+    ).all()
     return templates.TemplateResponse(
-        "nav.html", {"request": request, "funds": funds, "latest": latest, "message": message}
+        "nav.html", {"request": request, "funds": funds, "latest": latest, "message": message, "jobs": jobs}
     )
 
 
@@ -1070,10 +1271,66 @@ def nav_sync(
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
-    inserted, error = sync_nav_for_fund(session, fund_code.zfill(6))
-    if error:
-        return redirect(f"/nav?message=同步失败：{error}")
-    return redirect(f"/nav?message=同步完成，新增 {inserted} 条")
+    job = create_and_enqueue(session, "sync_nav", {"fund_code": fund_code.zfill(6)})
+    return redirect(f"/nav?message=净值同步已加入后台任务 #{job.id}")
+
+
+@app.get("/backup", response_class=HTMLResponse)
+def backup_page(
+    request: Request,
+    message: str = "",
+    _: str = Depends(require_user),
+):
+    return templates.TemplateResponse("backup.html", {"request": request, "message": message})
+
+
+@app.post("/backup/preview", response_class=HTMLResponse)
+async def backup_preview(
+    request: Request,
+    file: UploadFile = File(...),
+    _: str = Depends(require_user),
+):
+    try:
+        content = (await file.read()).decode("utf-8")
+        payload = json.loads(content)
+        counts = backup_counts(payload)
+    except Exception as exc:
+        return templates.TemplateResponse(
+            "backup.html",
+            {"request": request, "message": f"备份解析失败：{exc}"},
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        "backup.html",
+        {
+            "request": request,
+            "message": "备份预览已生成",
+            "backup_json": json.dumps(payload, ensure_ascii=False),
+            "counts": counts,
+            "version": payload.get("version"),
+            "exported_at": payload.get("exported_at"),
+        },
+    )
+
+
+@app.post("/backup/restore")
+def backup_restore(
+    request: Request,
+    backup_json: str = Form(...),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    try:
+        payload = json.loads(backup_json)
+        counts = restore_backup_payload(session, payload)
+    except Exception as exc:
+        return templates.TemplateResponse(
+            "backup.html",
+            {"request": request, "message": f"恢复失败：{exc}"},
+            status_code=400,
+        )
+    message = "恢复完成：" + "，".join(f"{key} {value}" for key, value in counts.items())
+    return templates.TemplateResponse("backup.html", {"request": request, "message": message})
 
 
 @app.get("/backup/export")

@@ -29,6 +29,13 @@ class ImportStatus(str, Enum):
     error = "error"
 
 
+class JobStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    done = "done"
+    error = "error"
+
+
 class AppSetting(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: str = ""
@@ -122,3 +129,15 @@ class FundNav(SQLModel, table=True):
     source: str = "efinance"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BackgroundJob(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_type: str = Field(index=True)
+    status: JobStatus = Field(default=JobStatus.queued, index=True)
+    payload_json: str = "{}"
+    result_message: str = ""
+    error_message: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
