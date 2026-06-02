@@ -14,6 +14,7 @@ from .auth import add_session_middleware, current_user, login_user, logout_user,
 from .config import ensure_data_dirs, settings
 from .db import get_session, init_db
 from .extractors import extract_candidates, hash_content, hash_file
+from .fund_rule_sync import fetch_fund_rule_from_akshare, sync_timestamp
 from .llm import is_deepseek_configured, parse_with_deepseek
 from .models import (
     CandidateStatus,
@@ -588,10 +589,57 @@ def fund_rule_save(
     rule.cutoff_time = cutoff_time or "15:00"
     rule.buy_fee_rate = max(buy_fee_rate, 0.0)
     rule.notes = notes
+    rule.sync_source = rule.sync_source or "manual"
     rule.updated_at = datetime.utcnow()
     session.add(rule)
     session.commit()
     return redirect("/fund-rules?message=规则已保存")
+
+
+@app.post("/fund-rules/sync")
+def fund_rule_sync(
+    fund_code: str = Form(...),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    code = fund_code.zfill(6)
+    try:
+        synced = fetch_fund_rule_from_akshare(code)
+    except Exception as exc:
+        return redirect(f"/fund-rules?message=自动查询失败：{exc}")
+
+    existing = session.get(FundRule, code)
+    rule = existing or FundRule(fund_code=code)
+    rule.fund_name = synced.fund_name or rule.fund_name
+    if synced.buy_confirm_days is not None:
+        rule.buy_confirm_days = synced.buy_confirm_days
+    if synced.sell_confirm_days is not None:
+        rule.sell_confirm_days = synced.sell_confirm_days
+    rule.cutoff_time = synced.cutoff_time or rule.cutoff_time or "15:00"
+    if synced.buy_fee_rate is not None:
+        rule.buy_fee_rate = synced.buy_fee_rate
+    rule.sync_source = synced.source
+    rule.synced_at = sync_timestamp()
+    note_parts = [part for part in [rule.notes, synced.raw_notes] if part]
+    rule.notes = "\n".join(dict.fromkeys(note_parts))
+    rule.updated_at = datetime.utcnow()
+    session.add(rule)
+
+    if synced.fee_tiers:
+        for tier in session.exec(select(FundFeeTier).where(FundFeeTier.fund_code == code)).all():
+            session.delete(tier)
+        for min_days, max_days, rate in synced.fee_tiers:
+            session.add(
+                FundFeeTier(
+                    fund_code=code,
+                    min_holding_days=min_days,
+                    max_holding_days=max_days,
+                    redemption_fee_rate=rate,
+                    updated_at=datetime.utcnow(),
+                )
+            )
+    session.commit()
+    return redirect("/fund-rules?message=自动查询已完成")
 
 
 @app.post("/fund-rules/{fund_code}/tiers")

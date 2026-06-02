@@ -328,6 +328,82 @@ async def test_sell_fee_uses_fifo_fee_tiers(client):
     assert "3.0" in page.text
 
 
+async def test_rule_parser_handles_confirm_and_fee_text():
+    from app.fund_rule_sync import parse_confirm_days, parse_redemption_fee_tiers
+
+    confirm_df = [
+        {"费用类型": "交易确认日", "条件或名称": "买入确认 T+1"},
+        {"费用类型": "交易确认日", "条件或名称": "卖出确认 T+2"},
+    ]
+    assert parse_confirm_days(confirm_df) == (1, 2)
+
+    tiers = parse_redemption_fee_tiers(
+        [
+            {"费用类型": "赎回费率", "条件或名称": "小于7天", "费用": "1.50%"},
+            {"费用类型": "赎回费率", "条件或名称": "大于等于7天，小于365天", "费用": "0.50%"},
+            {"费用类型": "赎回费率", "条件或名称": "大于等于365天", "费用": "0.00%"},
+        ]
+    )
+    assert tiers == [(0, 7, 0.015), (7, 365, 0.005), (365, None, 0.0)]
+
+
+async def test_fund_rule_auto_sync_creates_rule_and_tiers(client, monkeypatch):
+    import app.main
+    from app.fund_rule_sync import SyncedRule
+
+    await login(client)
+    monkeypatch.setattr(
+        app.main,
+        "fetch_fund_rule_from_akshare",
+        lambda code: SyncedRule(
+            fund_code=code,
+            fund_name="招商中证白酒",
+            buy_confirm_days=1,
+            sell_confirm_days=2,
+            buy_fee_rate=0.0,
+            fee_tiers=[(0, 7, 0.015), (7, None, 0.0)],
+            source="akshare",
+        ),
+    )
+    response = await client.post("/fund-rules/sync", data={"fund_code": "161725"}, follow_redirects=False)
+    assert response.status_code == 303
+    page = await client.get("/fund-rules")
+    assert "招商中证白酒" in page.text
+    assert "买入 T+1" in page.text
+    assert "卖出 T+2" in page.text
+    assert "0.0150" in page.text
+    assert "akshare" in page.text
+
+
+async def test_fund_rule_sync_failure_keeps_existing_rule(client, monkeypatch):
+    import app.main
+
+    await login(client)
+    await client.post(
+        "/fund-rules",
+        data={
+            "fund_code": "161725",
+            "fund_name": "人工规则",
+            "buy_confirm_days": "2",
+            "sell_confirm_days": "2",
+            "cutoff_time": "15:00",
+            "buy_fee_rate": "0",
+            "notes": "",
+        },
+        follow_redirects=False,
+    )
+    monkeypatch.setattr(
+        app.main,
+        "fetch_fund_rule_from_akshare",
+        lambda code: (_ for _ in ()).throw(RuntimeError("source down")),
+    )
+    response = await client.post("/fund-rules/sync", data={"fund_code": "161725"}, follow_redirects=False)
+    assert response.status_code == 303
+    page = await client.get("/fund-rules")
+    assert "人工规则" in page.text
+    assert "买入 T+2" in page.text
+
+
 async def test_failed_minimal_order_is_ignored(client):
     await login(client)
     await client.post(

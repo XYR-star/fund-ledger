@@ -7,6 +7,7 @@ itsdangerous==2.2.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 efinance==0.5.8
+akshare==1.18.64
 pandas==2.2.3
 numpy==1.26.4
 requests==2.32.3
