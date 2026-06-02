@@ -67,6 +67,14 @@ async def test_requires_login(client):
     assert response.headers["location"].startswith("/login")
 
 
+async def test_login_page_has_theme_toggle(client):
+    page = await client.get("/login")
+    assert 'data-theme-toggle' in page.text
+    assert 'fund-ledger-theme' in page.text
+    assert 'theme-icon-moon' in page.text
+    assert 'theme-icon-sun' in page.text
+
+
 async def test_login_success(client):
     response = await login(client)
     assert response.status_code == 303
