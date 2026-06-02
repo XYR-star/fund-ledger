@@ -36,6 +36,26 @@ class AppSetting(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class FundRule(SQLModel, table=True):
+    fund_code: str = Field(primary_key=True, max_length=6)
+    fund_name: str = ""
+    buy_confirm_days: int = 1
+    sell_confirm_days: int = 1
+    cutoff_time: str = "15:00"
+    buy_fee_rate: float = 0.0
+    notes: str = ""
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FundFeeTier(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    fund_code: str = Field(index=True, max_length=6)
+    min_holding_days: int = 0
+    max_holding_days: Optional[int] = None
+    redemption_fee_rate: float = 0.0
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class ImportDocument(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     file_name: Optional[str] = None

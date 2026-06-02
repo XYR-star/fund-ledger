@@ -127,6 +127,8 @@ async def test_backup_export(client):
     assert data["version"] == 1
     assert data["transactions"][0]["fund_code"] == "005827"
     assert data["imports"][0]["raw_text"]
+    assert "fund_rules" in data
+    assert "fund_fee_tiers" in data
 
 
 async def test_ocr_import_to_candidate_flow(client, monkeypatch):
@@ -241,6 +243,89 @@ async def test_minimal_buy_infers_nav_after_cutoff(client):
     assert "2024-01-03" in page.text
     assert "500.0" in page.text
     assert "2.0" in page.text
+
+
+async def test_fund_rule_controls_t_plus_confirm_date(client):
+    import app.db
+    from app.models import FundNav
+
+    await login(client)
+    response = await client.post(
+        "/fund-rules",
+        data={
+            "fund_code": "161725",
+            "fund_name": "招商中证白酒",
+            "buy_confirm_days": "2",
+            "sell_confirm_days": "1",
+            "cutoff_time": "15:00",
+            "buy_fee_rate": "0",
+            "notes": "",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.1))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 4), unit_nav=2.2))
+        session.commit()
+
+    await client.post(
+        "/upload",
+        data={"raw_text": "2024-01-02 14:30 161725 招商中证白酒 买入 1000元"},
+        follow_redirects=False,
+    )
+    page = await client.get("/candidates")
+    assert "2024-01-02" in page.text
+    assert "2024-01-04" in page.text
+
+
+async def test_sell_fee_uses_fifo_fee_tiers(client):
+    import app.db
+    from app.models import FundNav
+
+    await login(client)
+    await client.post(
+        "/fund-rules",
+        data={
+            "fund_code": "161725",
+            "fund_name": "招商中证白酒",
+            "buy_confirm_days": "1",
+            "sell_confirm_days": "1",
+            "cutoff_time": "15:00",
+            "buy_fee_rate": "0",
+            "notes": "",
+        },
+        follow_redirects=False,
+    )
+    await client.post(
+        "/fund-rules/161725/tiers",
+        data={"min_holding_days": "0", "max_holding_days": "7", "redemption_fee_rate": "0.015"},
+        follow_redirects=False,
+    )
+    await client.post(
+        "/fund-rules/161725/tiers",
+        data={"min_holding_days": "7", "max_holding_days": "", "redemption_fee_rate": "0"},
+        follow_redirects=False,
+    )
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.0))
+        session.commit()
+
+    await client.post(
+        "/upload",
+        data={"raw_text": "2024-01-02 10:00 161725 招商中证白酒 买入 1000元"},
+        follow_redirects=False,
+    )
+    await client.post("/candidates/1/confirm", follow_redirects=False)
+    await client.post(
+        "/upload",
+        data={"raw_text": "2024-01-03 10:00 161725 招商中证白酒 赎回 100份"},
+        follow_redirects=False,
+    )
+    page = await client.get("/candidates")
+    assert "3.0" in page.text
 
 
 async def test_failed_minimal_order_is_ignored(client):

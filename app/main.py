@@ -18,7 +18,9 @@ from .llm import is_deepseek_configured, parse_with_deepseek
 from .models import (
     CandidateStatus,
     AppSetting,
+    FundFeeTier,
     FundNav,
+    FundRule,
     FundTransaction,
     FundTransactionCandidate,
     ImportDocument,
@@ -120,13 +122,26 @@ def create_inferred_candidates_from_minimal_text(
         if not fund_code and fund_name in known_names:
             fund_code = known_names[fund_name]
         fund_code = (fund_code or "000000").zfill(6)
-        nav_item = find_effective_nav(session, fund_code, trade_day, submitted_at)
-        confirm_date = find_next_nav_date(session, fund_code, nav_item.nav_date) if nav_item else None
+        rule = get_fund_rule(session, fund_code)
+        nav_item = find_effective_nav(session, fund_code, trade_day, submitted_at, rule)
+        confirm_date = (
+            find_nth_nav_date(
+                session,
+                fund_code,
+                nav_item.nav_date,
+                rule.buy_confirm_days if action == TransactionAction.buy else rule.sell_confirm_days,
+            )
+            if nav_item
+            else None
+        )
         nav_value = nav_item.unit_nav if nav_item else None
         fee = 0.0 if action == TransactionAction.buy else None
         share = None
         if action == TransactionAction.buy and nav_value:
-            share = round((amount - (fee or 0)) / nav_value, 4)
+            fee = round(amount * rule.buy_fee_rate, 2)
+            share = round((amount - fee) / nav_value, 4)
+        if action == TransactionAction.sell and nav_value:
+            fee = infer_redemption_fee(session, fund_code, amount, nav_value, nav_item.nav_date)
         session.add(
             FundTransactionCandidate(
                 status=status,
@@ -220,10 +235,12 @@ def find_effective_nav(
     fund_code: str,
     trade_day: date,
     submitted_at: time | None,
+    rule: "FundRule | None" = None,
 ) -> FundNav | None:
     if fund_code == "000000":
         return None
-    target = trade_day + timedelta(days=1) if submitted_at and submitted_at >= time(15, 0) else trade_day
+    cutoff = parse_time_value((rule.cutoff_time if rule else "15:00") or "15:00")
+    target = trade_day + timedelta(days=1) if submitted_at and submitted_at >= cutoff else trade_day
     nav_item = session.exec(
         select(FundNav)
         .where(FundNav.fund_code == fund_code, FundNav.nav_date >= target)
@@ -239,13 +256,95 @@ def find_effective_nav(
     ).first()
 
 
-def find_next_nav_date(session: Session, fund_code: str, nav_date: date) -> date | None:
-    item = session.exec(
+def find_nth_nav_date(session: Session, fund_code: str, nav_date: date, n: int) -> date | None:
+    if n <= 0:
+        return nav_date
+    items = session.exec(
         select(FundNav)
         .where(FundNav.fund_code == fund_code, FundNav.nav_date > nav_date)
         .order_by(FundNav.nav_date)
-    ).first()
-    return item.nav_date if item else None
+    ).all()
+    return items[n - 1].nav_date if len(items) >= n else None
+
+
+def find_next_nav_date(session: Session, fund_code: str, nav_date: date) -> date | None:
+    return find_nth_nav_date(session, fund_code, nav_date, 1)
+
+
+def get_fund_rule(session: Session, fund_code: str) -> FundRule:
+    existing = session.get(FundRule, fund_code)
+    if existing:
+        return existing
+    return FundRule(fund_code=fund_code)
+
+
+def parse_time_value(value: str) -> time:
+    try:
+        hour, minute = value.split(":", 1)
+        return time(int(hour), int(minute))
+    except (ValueError, AttributeError):
+        return time(15, 0)
+
+
+def infer_redemption_fee(
+    session: Session,
+    fund_code: str,
+    sold_share: float,
+    nav_value: float,
+    sell_date: date,
+) -> float | None:
+    tiers = session.exec(
+        select(FundFeeTier)
+        .where(FundFeeTier.fund_code == fund_code)
+        .order_by(FundFeeTier.min_holding_days)
+    ).all()
+    if not tiers:
+        return None
+    remaining_share = sold_share
+    total_fee = 0.0
+    for lot_share, lot_date in open_lots(session, fund_code):
+        if remaining_share <= 0:
+            break
+        used_share = min(remaining_share, lot_share)
+        holding_days = max((sell_date - lot_date).days, 0)
+        rate = redemption_rate_for_days(tiers, holding_days)
+        total_fee += used_share * nav_value * rate
+        remaining_share -= used_share
+    return round(total_fee, 2) if sold_share > remaining_share else None
+
+
+def redemption_rate_for_days(tiers: list[FundFeeTier], holding_days: int) -> float:
+    for tier in tiers:
+        if holding_days < tier.min_holding_days:
+            continue
+        if tier.max_holding_days is None or holding_days < tier.max_holding_days:
+            return tier.redemption_fee_rate
+    return 0.0
+
+
+def open_lots(session: Session, fund_code: str) -> list[tuple[float, date]]:
+    lots: list[tuple[float, date]] = []
+    transactions = session.exec(
+        select(FundTransaction)
+        .where(FundTransaction.fund_code == fund_code)
+        .order_by(FundTransaction.trade_date, FundTransaction.id)
+    ).all()
+    for tx in transactions:
+        if tx.action in {TransactionAction.buy, TransactionAction.dividend_reinvest} and tx.share:
+            lots.append((tx.share, tx.trade_date))
+        elif tx.action == TransactionAction.sell and tx.share:
+            remaining = tx.share
+            new_lots: list[tuple[float, date]] = []
+            for lot_share, lot_date in lots:
+                if remaining <= 0:
+                    new_lots.append((lot_share, lot_date))
+                    continue
+                used = min(remaining, lot_share)
+                remaining -= used
+                if lot_share > used:
+                    new_lots.append((lot_share - used, lot_date))
+            lots = new_lots
+    return lots
 
 
 def create_candidates_from_rows(
@@ -302,6 +401,20 @@ def parse_float_value(value: Any) -> float | None:
         return float(str(value).replace(",", "").replace("元", "").replace("份", "").strip())
     except ValueError:
         return None
+
+
+def parse_int_value(value: Any) -> int | None:
+    if value in (None, "", "-", "null"):
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def parse_positive_int_value(value: Any) -> int | None:
+    parsed = parse_int_value(value)
+    return parsed if parsed and parsed > 0 else None
 
 
 @app.exception_handler(401)
@@ -435,6 +548,89 @@ def settings_update(
     }
     save_settings(session, values)
     return redirect("/settings?message=设置已保存")
+
+
+@app.get("/fund-rules", response_class=HTMLResponse)
+def fund_rules_page(
+    request: Request,
+    message: str = "",
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    rules = session.exec(select(FundRule).order_by(FundRule.fund_code)).all()
+    tiers = session.exec(select(FundFeeTier).order_by(FundFeeTier.fund_code, FundFeeTier.min_holding_days)).all()
+    tiers_by_code: dict[str, list[FundFeeTier]] = {}
+    for tier in tiers:
+        tiers_by_code.setdefault(tier.fund_code, []).append(tier)
+    return templates.TemplateResponse(
+        "fund_rules.html",
+        {"request": request, "rules": rules, "tiers_by_code": tiers_by_code, "message": message},
+    )
+
+
+@app.post("/fund-rules")
+def fund_rule_save(
+    fund_code: str = Form(...),
+    fund_name: str = Form(""),
+    buy_confirm_days: int = Form(1),
+    sell_confirm_days: int = Form(1),
+    cutoff_time: str = Form("15:00"),
+    buy_fee_rate: float = Form(0.0),
+    notes: str = Form(""),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    code = fund_code.zfill(6)
+    rule = session.get(FundRule, code) or FundRule(fund_code=code)
+    rule.fund_name = fund_name
+    rule.buy_confirm_days = max(buy_confirm_days, 0)
+    rule.sell_confirm_days = max(sell_confirm_days, 0)
+    rule.cutoff_time = cutoff_time or "15:00"
+    rule.buy_fee_rate = max(buy_fee_rate, 0.0)
+    rule.notes = notes
+    rule.updated_at = datetime.utcnow()
+    session.add(rule)
+    session.commit()
+    return redirect("/fund-rules?message=规则已保存")
+
+
+@app.post("/fund-rules/{fund_code}/tiers")
+def fund_fee_tier_add(
+    fund_code: str,
+    min_holding_days: str = Form("0"),
+    max_holding_days: str = Form(""),
+    redemption_fee_rate: str = Form("0"),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    code = fund_code.zfill(6)
+    if not session.get(FundRule, code):
+        session.add(FundRule(fund_code=code))
+    session.add(
+        FundFeeTier(
+            fund_code=code,
+            min_holding_days=max(parse_int_value(min_holding_days) or 0, 0),
+            max_holding_days=parse_positive_int_value(max_holding_days),
+            redemption_fee_rate=max(parse_float_value(redemption_fee_rate) or 0.0, 0.0),
+            updated_at=datetime.utcnow(),
+        )
+    )
+    session.commit()
+    return redirect("/fund-rules?message=费率档已添加")
+
+
+@app.post("/fund-rules/tiers/{tier_id}/delete")
+def fund_fee_tier_delete(
+    tier_id: int,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    tier = session.get(FundFeeTier, tier_id)
+    if not tier:
+        raise HTTPException(status_code=404)
+    session.delete(tier)
+    session.commit()
+    return redirect("/fund-rules?message=费率档已删除")
 
 
 @app.get("/upload", response_class=HTMLResponse)
@@ -851,6 +1047,14 @@ def backup_export(
         "settings": [
             {**serialize_model(item), "value": "***" if item.is_secret and item.value else item.value}
             for item in session.exec(select(AppSetting).order_by(AppSetting.key)).all()
+        ],
+        "fund_rules": [
+            serialize_model(item)
+            for item in session.exec(select(FundRule).order_by(FundRule.fund_code)).all()
+        ],
+        "fund_fee_tiers": [
+            serialize_model(item)
+            for item in session.exec(select(FundFeeTier).order_by(FundFeeTier.fund_code)).all()
         ],
         "transactions": [
             serialize_model(item)
