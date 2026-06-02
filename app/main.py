@@ -1,4 +1,5 @@
-from datetime import date, datetime
+import re
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -68,6 +69,13 @@ def create_candidates_from_text(
     source_hash: str | None = None,
 ) -> int:
     extracted = extract_candidates(raw_text)
+    if not extracted:
+        return create_inferred_candidates_from_minimal_text(
+            session,
+            raw_text,
+            source_file=source_file,
+            source_hash=source_hash,
+        )
     for item in extracted:
         session.add(
             FundTransactionCandidate(
@@ -87,6 +95,157 @@ def create_candidates_from_text(
             )
         )
     return len(extracted)
+
+
+def create_inferred_candidates_from_minimal_text(
+    session: Session,
+    raw_text: str,
+    source_file: str | None = None,
+    source_hash: str | None = None,
+) -> int:
+    created = 0
+    known_names = known_fund_names(session)
+    for line in raw_text.splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        trade_day, submitted_at = extract_trade_datetime(text)
+        amount = extract_amount(text)
+        if not trade_day or amount is None:
+            continue
+        action = infer_action(text)
+        status = infer_candidate_status(text)
+        fund_code = extract_fund_code(text)
+        fund_name = extract_fund_name(text, fund_code, known_names)
+        if not fund_code and fund_name in known_names:
+            fund_code = known_names[fund_name]
+        fund_code = (fund_code or "000000").zfill(6)
+        nav_item = find_effective_nav(session, fund_code, trade_day, submitted_at)
+        confirm_date = find_next_nav_date(session, fund_code, nav_item.nav_date) if nav_item else None
+        nav_value = nav_item.unit_nav if nav_item else None
+        fee = 0.0 if action == TransactionAction.buy else None
+        share = None
+        if action == TransactionAction.buy and nav_value:
+            share = round((amount - (fee or 0)) / nav_value, 4)
+        session.add(
+            FundTransactionCandidate(
+                status=status,
+                fund_code=fund_code,
+                fund_name=fund_name,
+                trade_date=nav_item.nav_date if nav_item else trade_day,
+                confirm_date=confirm_date,
+                action=action,
+                amount_cny=amount if action != TransactionAction.sell else None,
+                share=share if action != TransactionAction.sell else amount,
+                nav=nav_value,
+                fee=fee,
+                source_file=source_file,
+                source_hash=source_hash,
+                raw_text=text,
+                confidence=0.55 if fund_code == "000000" else 0.75,
+            )
+        )
+        created += 1
+    return created
+
+
+def known_fund_names(session: Session) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for item in session.exec(select(FundTransactionCandidate)).all():
+        if item.fund_name and item.fund_code != "000000":
+            names[item.fund_name] = item.fund_code
+    for item in session.exec(select(FundTransaction)).all():
+        if item.fund_name and item.fund_code != "000000":
+            names[item.fund_name] = item.fund_code
+    return names
+
+
+def extract_trade_datetime(text: str) -> tuple[date | None, time | None]:
+    match = re.search(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})", text)
+    if not match:
+        return None, None
+    trade_day = parse_date_value(match.group(1))
+    time_match = re.search(r"(\d{1,2}):(\d{2})", text)
+    if not time_match:
+        return trade_day, None
+    return trade_day, time(int(time_match.group(1)), int(time_match.group(2)))
+
+
+def extract_fund_code(text: str) -> str | None:
+    match = re.search(r"(?<!\d)(\d{6})(?!\d)", text)
+    return match.group(1) if match else None
+
+
+def extract_fund_name(text: str, fund_code: str | None, known_names: dict[str, str]) -> str:
+    for name in sorted(known_names, key=len, reverse=True):
+        if name and name in text:
+            return name
+    cleaned = re.sub(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", " ", text)
+    cleaned = re.sub(r"\d{1,2}:\d{2}", " ", cleaned)
+    if fund_code:
+        cleaned = cleaned.replace(fund_code, " ")
+    cleaned = re.sub(r"[买入申购卖出赎回成功失败撤销取消已确认交易金额人民币元：:,.，。\d\s-]+", " ", cleaned)
+    parts = [part for part in re.split(r"\s+", cleaned.strip()) if part]
+    return parts[0] if parts else ""
+
+
+def extract_amount(text: str) -> float | None:
+    cleaned = re.sub(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", " ", text)
+    cleaned = re.sub(r"\d{1,2}:\d{2}", " ", cleaned)
+    cleaned = re.sub(r"(?<!\d)\d{6}(?!\d)", " ", cleaned)
+    values = re.findall(r"(?<!\d)(\d+(?:,\d{3})*(?:\.\d+)?|\d+\.\d+)(?!\d)", cleaned)
+    if not values:
+        return None
+    return parse_float_value(values[-1])
+
+
+def infer_action(text: str) -> TransactionAction:
+    if any(word in text for word in ("赎回", "卖出", "sell", "SELL")):
+        return TransactionAction.sell
+    if "红利再投" in text:
+        return TransactionAction.dividend_reinvest
+    if "分红" in text:
+        return TransactionAction.dividend
+    return TransactionAction.buy
+
+
+def infer_candidate_status(text: str) -> CandidateStatus:
+    if any(word in text for word in ("撤销", "取消", "失败", "未成功")):
+        return CandidateStatus.ignored
+    return CandidateStatus.pending
+
+
+def find_effective_nav(
+    session: Session,
+    fund_code: str,
+    trade_day: date,
+    submitted_at: time | None,
+) -> FundNav | None:
+    if fund_code == "000000":
+        return None
+    target = trade_day + timedelta(days=1) if submitted_at and submitted_at >= time(15, 0) else trade_day
+    nav_item = session.exec(
+        select(FundNav)
+        .where(FundNav.fund_code == fund_code, FundNav.nav_date >= target)
+        .order_by(FundNav.nav_date)
+    ).first()
+    if nav_item:
+        return nav_item
+    sync_nav_for_fund(session, fund_code)
+    return session.exec(
+        select(FundNav)
+        .where(FundNav.fund_code == fund_code, FundNav.nav_date >= target)
+        .order_by(FundNav.nav_date)
+    ).first()
+
+
+def find_next_nav_date(session: Session, fund_code: str, nav_date: date) -> date | None:
+    item = session.exec(
+        select(FundNav)
+        .where(FundNav.fund_code == fund_code, FundNav.nav_date > nav_date)
+        .order_by(FundNav.nav_date)
+    ).first()
+    return item.nav_date if item else None
 
 
 def create_candidates_from_rows(
@@ -234,9 +393,11 @@ def settings_page(
 
 @app.post("/settings")
 def settings_update(
+    deepseek_enabled: str = Form("off"),
     deepseek_api_key: str = Form(""),
     deepseek_base_url: str = Form("https://api.deepseek.com"),
     deepseek_model: str = Form("deepseek-chat"),
+    ocr_enabled: str = Form("off"),
     ocr_backend: str = Form("rapidocr"),
     ocr_api_provider: str = Form("generic"),
     ocr_api_url: str = Form(""),
@@ -253,9 +414,11 @@ def settings_update(
 ):
     current = runtime_settings(session)
     values = {
+        "DEEPSEEK_ENABLED": "true" if deepseek_enabled == "on" else "false",
         "DEEPSEEK_API_KEY": deepseek_api_key.strip() or current.get("DEEPSEEK_API_KEY", ""),
         "DEEPSEEK_BASE_URL": deepseek_base_url.strip() or "https://api.deepseek.com",
         "DEEPSEEK_MODEL": deepseek_model.strip() or "deepseek-chat",
+        "OCR_ENABLED": "true" if ocr_enabled == "on" else "false",
         "OCR_BACKEND": ocr_backend,
         "OCR_API_PROVIDER": ocr_api_provider,
         "OCR_API_URL": ocr_api_url.strip(),
@@ -317,14 +480,23 @@ async def upload_submit(
 @app.get("/imports", response_class=HTMLResponse)
 def imports_page(
     request: Request,
+    show: str = "",
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
-    documents = session.exec(select(ImportDocument).order_by(desc(ImportDocument.created_at))).all()
+    query = select(ImportDocument).order_by(desc(ImportDocument.created_at))
+    if show != "all":
+        query = query.where(ImportDocument.status != ImportStatus.deleted)
+    documents = session.exec(query).all()
     config = runtime_settings(session)
     return templates.TemplateResponse(
         "imports.html",
-        {"request": request, "documents": documents, "llm_configured": is_deepseek_configured(config)},
+        {
+            "request": request,
+            "documents": documents,
+            "show": show,
+            "llm_configured": is_deepseek_configured(config),
+        },
     )
 
 
@@ -350,6 +522,59 @@ def import_detail_page(
             "ocr_backend": config.get("OCR_BACKEND", "rapidocr"),
         },
     )
+
+
+@app.post("/imports/{document_id}/archive")
+def import_archive(
+    document_id: int,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    document = session.get(ImportDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=404)
+    document.status = ImportStatus.archived
+    document.updated_at = datetime.utcnow()
+    session.add(document)
+    session.commit()
+    return redirect("/imports")
+
+
+@app.post("/imports/{document_id}/restore")
+def import_restore(
+    document_id: int,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    document = session.get(ImportDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=404)
+    document.status = ImportStatus.uploaded
+    document.updated_at = datetime.utcnow()
+    session.add(document)
+    session.commit()
+    return redirect(f"/imports/{document_id}")
+
+
+@app.post("/imports/{document_id}/delete")
+def import_delete(
+    document_id: int,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    document = session.get(ImportDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=404)
+    if document.source_file:
+        path = Path(document.source_file)
+        if path.exists() and path.is_file():
+            path.unlink()
+    document.status = ImportStatus.deleted
+    document.source_file = None
+    document.updated_at = datetime.utcnow()
+    session.add(document)
+    session.commit()
+    return redirect("/imports")
 
 
 @app.post("/imports/{document_id}/ocr")

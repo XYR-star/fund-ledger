@@ -21,6 +21,8 @@ def recognize_file(path: str | Path, config: dict[str, str] | None = None) -> Oc
     file_path = Path(path)
     if not file_path.exists():
         raise FileNotFoundError(str(file_path))
+    if _config_value(config, "OCR_ENABLED", "true").lower() not in {"1", "true", "yes", "on"}:
+        raise RuntimeError("OCR is disabled in settings")
     backend = _config_value(config, "OCR_BACKEND", "rapidocr").lower()
     if backend == "api":
         return _recognize_with_api(file_path, config or {})

@@ -6,7 +6,10 @@
     <h1>导入文档</h1>
     <p class="muted">上传文件、OCR 和解析状态。</p>
   </div>
-  <a class="btn primary" href="/upload">上传</a>
+  <div class="actions">
+    <a class="btn" href="/imports{% if show != 'all' %}?show=all{% endif %}">{{ "只看有效" if show == "all" else "显示全部" }}</a>
+    <a class="btn primary" href="/upload">上传</a>
+  </div>
 </div>
 <div class="table-wrap">
   <table>
@@ -19,7 +22,23 @@
         <td><span class="badge">{{ doc.status.value }}</span></td>
         <td>{{ (doc.ocr_text or doc.raw_text)|length }}</td>
         <td>{{ doc.updated_at }}</td>
-        <td><a class="btn" href="/imports/{{ doc.id }}">打开</a></td>
+        <td>
+          <div class="actions">
+            <a class="btn" href="/imports/{{ doc.id }}">打开</a>
+            {% if doc.status.value == "archived" or doc.status.value == "deleted" %}
+            <form method="post" action="/imports/{{ doc.id }}/restore">
+              <button class="btn" type="submit">恢复</button>
+            </form>
+            {% else %}
+            <form method="post" action="/imports/{{ doc.id }}/archive">
+              <button class="btn" type="submit">归档</button>
+            </form>
+            <form method="post" action="/imports/{{ doc.id }}/delete">
+              <button class="btn danger" type="submit">删除</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
       </tr>
       {% else %}
       <tr><td colspan="6" class="muted">暂无导入文档。</td></tr>

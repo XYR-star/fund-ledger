@@ -24,6 +24,8 @@ class ImportStatus(str, Enum):
     ocr_running = "ocr_running"
     ocr_done = "ocr_done"
     parse_done = "parse_done"
+    archived = "archived"
+    deleted = "deleted"
     error = "error"
 
 

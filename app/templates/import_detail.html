@@ -6,7 +6,21 @@
     <h1>导入 #{{ document.id }}</h1>
     <p class="muted">{{ document.file_name or "手动文本" }} · {{ document.status.value }}</p>
   </div>
-  <a class="btn" href="/imports">返回导入列表</a>
+  <div class="actions">
+    <a class="btn" href="/imports">返回导入列表</a>
+    {% if document.status.value == "archived" or document.status.value == "deleted" %}
+    <form method="post" action="/imports/{{ document.id }}/restore">
+      <button class="btn" type="submit">恢复</button>
+    </form>
+    {% else %}
+    <form method="post" action="/imports/{{ document.id }}/archive">
+      <button class="btn" type="submit">归档</button>
+    </form>
+    <form method="post" action="/imports/{{ document.id }}/delete">
+      <button class="btn danger" type="submit">删除</button>
+    </form>
+    {% endif %}
+  </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
 {% if document.error_message %}<section class="panel error">{{ document.error_message }}</section>{% endif %}

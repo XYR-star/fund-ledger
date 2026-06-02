@@ -1,13 +1,20 @@
-import os
-from pathlib import Path
+from datetime import date
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
-from sqlmodel import SQLModel
+from sqlmodel import Session, SQLModel
+
+
+pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture()
-def client(tmp_path, monkeypatch):
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture()
+async def client(tmp_path, monkeypatch):
     db_path = tmp_path / "fund-ledger.sqlite3"
     data_dir = tmp_path / "data"
     monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
@@ -27,35 +34,37 @@ def client(tmp_path, monkeypatch):
     importlib.reload(app.config)
     importlib.reload(app.db)
     importlib.reload(app.main)
+    monkeypatch.setattr(app.main, "sync_nav_for_fund", lambda *_: (0, "offline"))
     SQLModel.metadata.drop_all(app.db.engine)
     SQLModel.metadata.create_all(app.db.engine)
-    with TestClient(app.main.app) as test_client:
+    transport = httpx.ASGITransport(app=app.main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as test_client:
         yield test_client
 
 
-def login(client):
-    return client.post(
+async def login(client):
+    return await client.post(
         "/login",
         data={"username": "admin", "password": "changeme", "next": "/"},
         follow_redirects=False,
     )
 
 
-def test_requires_login(client):
-    response = client.get("/", follow_redirects=False)
+async def test_requires_login(client):
+    response = await client.get("/", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"].startswith("/login")
 
 
-def test_login_success(client):
-    response = login(client)
+async def test_login_success(client):
+    response = await login(client)
     assert response.status_code == 303
     assert response.headers["location"] == "/"
 
 
-def test_candidate_confirm_flow(client):
-    login(client)
-    response = client.post(
+async def test_candidate_confirm_flow(client):
+    await login(client)
+    response = await client.post(
         "/upload",
         data={
             "raw_text": "2024-01-02 161725 招商中证白酒 buy 1000 - 1.0000 1.00"
@@ -64,54 +73,54 @@ def test_candidate_confirm_flow(client):
     )
     assert response.status_code == 303
 
-    page = client.get("/candidates")
+    page = await client.get("/candidates")
     assert "161725" in page.text
     assert "pending" in page.text
 
-    response = client.post("/candidates/1/confirm", follow_redirects=False)
+    response = await client.post("/candidates/1/confirm", follow_redirects=False)
     assert response.status_code == 303
-    tx_page = client.get("/transactions")
+    tx_page = await client.get("/transactions")
     assert "招商中证白酒" in tx_page.text
     assert "¥1000.00" in tx_page.text
 
-    response = client.post("/candidates/1/confirm", follow_redirects=False)
+    response = await client.post("/candidates/1/confirm", follow_redirects=False)
     assert response.status_code == 303
-    tx_page = client.get("/transactions")
+    tx_page = await client.get("/transactions")
     assert tx_page.text.count("招商中证白酒") == 1
 
 
-def test_ignore_candidate_does_not_create_transaction(client):
-    login(client)
-    client.post(
+async def test_ignore_candidate_does_not_create_transaction(client):
+    await login(client)
+    await client.post(
         "/upload",
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 - 2.0000 0"},
     )
-    client.post("/candidates/1/ignore", follow_redirects=False)
-    tx_page = client.get("/transactions")
+    await client.post("/candidates/1/ignore", follow_redirects=False)
+    tx_page = await client.get("/transactions")
     assert "易方达蓝筹" not in tx_page.text
 
 
-def test_holdings_calculation_without_synced_nav(client):
-    login(client)
-    client.post(
+async def test_holdings_calculation_without_synced_nav(client):
+    await login(client)
+    await client.post(
         "/upload",
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
     )
-    client.post("/candidates/1/confirm", follow_redirects=False)
-    page = client.get("/holdings")
+    await client.post("/candidates/1/confirm", follow_redirects=False)
+    page = await client.get("/holdings")
     assert "005827" in page.text
     assert "250.0000" in page.text
     assert "¥500.00" in page.text
 
 
-def test_backup_export(client):
-    login(client)
-    client.post(
+async def test_backup_export(client):
+    await login(client)
+    await client.post(
         "/upload",
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
     )
-    client.post("/candidates/1/confirm", follow_redirects=False)
-    response = client.get("/backup/export")
+    await client.post("/candidates/1/confirm", follow_redirects=False)
+    response = await client.get("/backup/export")
     assert response.status_code == 200
     assert response.headers["content-disposition"].startswith("attachment;")
     data = response.json()
@@ -120,11 +129,11 @@ def test_backup_export(client):
     assert data["imports"][0]["raw_text"]
 
 
-def test_ocr_import_to_candidate_flow(client, monkeypatch):
+async def test_ocr_import_to_candidate_flow(client, monkeypatch):
     import app.main
     from app.ocr import OcrResult
 
-    login(client)
+    await login(client)
     monkeypatch.setattr(
         app.main,
         "recognize_file",
@@ -133,7 +142,7 @@ def test_ocr_import_to_candidate_flow(client, monkeypatch):
             confidence=0.99,
         ),
     )
-    response = client.post(
+    response = await client.post(
         "/upload",
         files={"file": ("trade.png", b"fake image", "image/png")},
         follow_redirects=False,
@@ -141,26 +150,28 @@ def test_ocr_import_to_candidate_flow(client, monkeypatch):
     assert response.status_code == 303
     assert response.headers["location"] == "/imports/1"
 
-    response = client.post("/imports/1/ocr", follow_redirects=False)
+    response = await client.post("/imports/1/ocr", follow_redirects=False)
     assert response.status_code == 303
-    detail = client.get("/imports/1")
+    detail = await client.get("/imports/1")
     assert "招商中证白酒" in detail.text
 
-    response = client.post("/imports/1/parse", follow_redirects=False)
+    response = await client.post("/imports/1/parse", follow_redirects=False)
     assert response.status_code == 303
-    page = client.get("/candidates")
+    page = await client.get("/candidates")
     assert "161725" in page.text
     assert "pending" in page.text
 
 
-def test_settings_page_saves_runtime_config(client):
-    login(client)
-    response = client.post(
+async def test_settings_page_saves_runtime_config(client):
+    await login(client)
+    response = await client.post(
         "/settings",
         data={
+            "deepseek_enabled": "on",
             "deepseek_api_key": "sk-test-secret",
             "deepseek_base_url": "https://api.deepseek.example",
             "deepseek_model": "deepseek-chat",
+            "ocr_enabled": "on",
             "ocr_backend": "api",
             "ocr_api_provider": "generic",
             "ocr_api_url": "https://ocr.example/parse",
@@ -176,9 +187,68 @@ def test_settings_page_saves_runtime_config(client):
         follow_redirects=False,
     )
     assert response.status_code == 303
-    page = client.get("/settings")
+    page = await client.get("/settings")
     assert "api.deepseek.example" in page.text
     assert "https://ocr.example/parse" in page.text
     assert "sk-test-secret" not in page.text
     assert "ocr-secret" not in page.text
     assert "末尾 cret" in page.text
+    assert "已启用且已配置" in page.text
+
+
+async def test_import_archive_delete_restore(client):
+    await login(client)
+    await client.post(
+        "/upload",
+        data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
+        follow_redirects=False,
+    )
+    response = await client.post("/imports/1/archive", follow_redirects=False)
+    assert response.status_code == 303
+    page = await client.get("/imports")
+    assert "archived" in page.text
+
+    response = await client.post("/imports/1/restore", follow_redirects=False)
+    assert response.status_code == 303
+    detail = await client.get("/imports/1")
+    assert "uploaded" in detail.text
+
+    response = await client.post("/imports/1/delete", follow_redirects=False)
+    assert response.status_code == 303
+    page = await client.get("/imports")
+    assert "易方达蓝筹" not in page.text
+    page = await client.get("/imports?show=all")
+    assert "deleted" in page.text
+
+
+async def test_minimal_buy_infers_nav_after_cutoff(client):
+    import app.db
+    from app.models import FundNav
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 4), unit_nav=2.1))
+        session.commit()
+
+    await client.post(
+        "/upload",
+        data={"raw_text": "2024-01-02 15:30 161725 招商中证白酒 买入 1000元"},
+        follow_redirects=False,
+    )
+    page = await client.get("/candidates")
+    assert "161725" in page.text
+    assert "2024-01-03" in page.text
+    assert "500.0" in page.text
+    assert "2.0" in page.text
+
+
+async def test_failed_minimal_order_is_ignored(client):
+    await login(client)
+    await client.post(
+        "/upload",
+        data={"raw_text": "2024-01-02 10:00 161725 招商中证白酒 买入 1000元 交易失败"},
+        follow_redirects=False,
+    )
+    page = await client.get("/candidates")
+    assert "ignored" in page.text

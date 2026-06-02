@@ -16,9 +16,11 @@ SECRET_KEYS = {
 }
 
 DEFAULTS = {
+    "DEEPSEEK_ENABLED": "true",
     "DEEPSEEK_API_KEY": "",
     "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
     "DEEPSEEK_MODEL": "deepseek-chat",
+    "OCR_ENABLED": "true",
     "OCR_BACKEND": "rapidocr",
     "OCR_API_PROVIDER": "generic",
     "OCR_API_URL": "",

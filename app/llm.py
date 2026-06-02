@@ -12,12 +12,12 @@ class LlmParseResult:
 
 
 def is_deepseek_configured(config: dict[str, str] | None = None) -> bool:
-    return bool(_value(config, "DEEPSEEK_API_KEY"))
+    return _enabled(config, "DEEPSEEK_ENABLED") and bool(_value(config, "DEEPSEEK_API_KEY"))
 
 
 def parse_with_deepseek(raw_text: str, config: dict[str, str] | None = None) -> LlmParseResult | None:
     api_key = _value(config, "DEEPSEEK_API_KEY")
-    if not api_key:
+    if not api_key or not _enabled(config, "DEEPSEEK_ENABLED"):
         return None
 
     base_url = _value(config, "DEEPSEEK_BASE_URL", "https://api.deepseek.com")
@@ -48,6 +48,10 @@ def _value(config: dict[str, str] | None, key: str, default: str = "") -> str:
     if config is not None:
         return config.get(key, default)
     return os.getenv(key, default)
+
+
+def _enabled(config: dict[str, str] | None, key: str) -> bool:
+    return _value(config, key, "true").lower() in {"1", "true", "yes", "on"}
 
 
 def _extract_json_array(text: str) -> list[dict] | None:

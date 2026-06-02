@@ -13,6 +13,12 @@
   <section class="panel stack">
     <h2>DeepSeek 解析</h2>
     <div class="form-grid">
+      <label>启用
+        <select name="deepseek_enabled">
+          <option value="on" {% if config.DEEPSEEK_ENABLED == "true" %}selected{% endif %}>启动</option>
+          <option value="off" {% if config.DEEPSEEK_ENABLED != "true" %}selected{% endif %}>停止</option>
+        </select>
+      </label>
       <label>API Key
         <input type="password" name="deepseek_api_key" placeholder="{{ masked(config.DEEPSEEK_API_KEY) }}" autocomplete="off">
       </label>
@@ -23,7 +29,7 @@
         <input name="deepseek_model" value="{{ config.DEEPSEEK_MODEL }}">
       </label>
       <label>状态
-        <input value="{{ '已启用' if configured(config.DEEPSEEK_API_KEY) else '未启用' }}" disabled>
+        <input value="{{ '已启用且已配置' if config.DEEPSEEK_ENABLED == 'true' and configured(config.DEEPSEEK_API_KEY) else ('已配置但已停止' if configured(config.DEEPSEEK_API_KEY) else '未配置') }}" disabled>
       </label>
     </div>
   </section>
@@ -31,6 +37,12 @@
   <section class="panel stack">
     <h2>OCR 后端</h2>
     <div class="form-grid">
+      <label>启用
+        <select name="ocr_enabled">
+          <option value="on" {% if config.OCR_ENABLED == "true" %}selected{% endif %}>启动</option>
+          <option value="off" {% if config.OCR_ENABLED != "true" %}selected{% endif %}>停止</option>
+        </select>
+      </label>
       <label>后端
         <select name="ocr_backend">
           <option value="rapidocr" {% if config.OCR_BACKEND == "rapidocr" %}selected{% endif %}>本地 RapidOCR</option>
@@ -48,8 +60,8 @@
       <label>当前后端
         <input value="{{ config.OCR_BACKEND }}" disabled>
       </label>
-      <label>本地说明
-        <input value="RapidOCR 无需 API Key" disabled>
+      <label>状态
+        <input value="{{ '已启用' if config.OCR_ENABLED == 'true' else '已停止' }} · {{ 'API 已配置' if configured(config.OCR_API_KEY) or configured(config.BAIDU_OCR_API_KEY) else '本地或未配置 API' }}" disabled>
       </label>
     </div>
   </section>
