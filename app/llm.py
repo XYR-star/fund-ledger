@@ -11,17 +11,17 @@ class LlmParseResult:
     parsed_json: list[dict] | None
 
 
-def is_deepseek_configured() -> bool:
-    return bool(os.getenv("DEEPSEEK_API_KEY"))
+def is_deepseek_configured(config: dict[str, str] | None = None) -> bool:
+    return bool(_value(config, "DEEPSEEK_API_KEY"))
 
 
-def parse_with_deepseek(raw_text: str) -> LlmParseResult | None:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+def parse_with_deepseek(raw_text: str, config: dict[str, str] | None = None) -> LlmParseResult | None:
+    api_key = _value(config, "DEEPSEEK_API_KEY")
     if not api_key:
         return None
 
-    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    base_url = _value(config, "DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    model = _value(config, "DEEPSEEK_MODEL", "deepseek-chat")
     prompt = (
         "请从下面的中国场外基金交易记录文本中提取交易，"
         "只返回 JSON 数组。字段为 fund_code, fund_name, trade_date, confirm_date, "
@@ -42,6 +42,12 @@ def parse_with_deepseek(raw_text: str) -> LlmParseResult | None:
     response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]
     return LlmParseResult(raw_response=content, parsed_json=_extract_json_array(content))
+
+
+def _value(config: dict[str, str] | None, key: str, default: str = "") -> str:
+    if config is not None:
+        return config.get(key, default)
+    return os.getenv(key, default)
 
 
 def _extract_json_array(text: str) -> list[dict] | None:

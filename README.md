@@ -36,3 +36,5 @@ DEEPSEEK_API_KEY=your-key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 ```
+
+Runtime settings can also be edited from `/settings`. Values saved there are stored in SQLite and take effect without a service restart. Secret values are stored but not fully displayed in the UI or backup export.

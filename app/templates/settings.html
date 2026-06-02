@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}设置 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>设置</h1>
+    <p class="muted">密钥留空表示保留当前值；页面只显示配置状态，不回显完整密钥。</p>
+  </div>
+</div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+
+<form class="stack" method="post" action="/settings">
+  <section class="panel stack">
+    <h2>DeepSeek 解析</h2>
+    <div class="form-grid">
+      <label>API Key
+        <input type="password" name="deepseek_api_key" placeholder="{{ masked(config.DEEPSEEK_API_KEY) }}" autocomplete="off">
+      </label>
+      <label>Base URL
+        <input name="deepseek_base_url" value="{{ config.DEEPSEEK_BASE_URL }}">
+      </label>
+      <label>模型
+        <input name="deepseek_model" value="{{ config.DEEPSEEK_MODEL }}">
+      </label>
+      <label>状态
+        <input value="{{ '已启用' if configured(config.DEEPSEEK_API_KEY) else '未启用' }}" disabled>
+      </label>
+    </div>
+  </section>
+
+  <section class="panel stack">
+    <h2>OCR 后端</h2>
+    <div class="form-grid">
+      <label>后端
+        <select name="ocr_backend">
+          <option value="rapidocr" {% if config.OCR_BACKEND == "rapidocr" %}selected{% endif %}>本地 RapidOCR</option>
+          <option value="api" {% if config.OCR_BACKEND == "api" %}selected{% endif %}>通用 OCR API</option>
+          <option value="baidu" {% if config.OCR_BACKEND == "baidu" %}selected{% endif %}>百度 OCR API</option>
+          <option value="paddle" {% if config.OCR_BACKEND == "paddle" %}selected{% endif %}>PaddleOCR 可选</option>
+        </select>
+      </label>
+      <label>API 类型
+        <select name="ocr_api_provider">
+          <option value="generic" {% if config.OCR_API_PROVIDER == "generic" %}selected{% endif %}>Generic multipart</option>
+          <option value="baidu" {% if config.OCR_API_PROVIDER == "baidu" %}selected{% endif %}>Baidu</option>
+        </select>
+      </label>
+      <label>当前后端
+        <input value="{{ config.OCR_BACKEND }}" disabled>
+      </label>
+      <label>本地说明
+        <input value="RapidOCR 无需 API Key" disabled>
+      </label>
+    </div>
+  </section>
+
+  <section class="panel stack">
+    <h2>通用 OCR API</h2>
+    <div class="form-grid">
+      <label>API URL
+        <input name="ocr_api_url" value="{{ config.OCR_API_URL }}" placeholder="https://example.com/ocr">
+      </label>
+      <label>鉴权 Header
+        <input name="ocr_api_auth_header" value="{{ config.OCR_API_AUTH_HEADER }}">
+      </label>
+      <label>鉴权前缀
+        <input name="ocr_api_auth_prefix" value="{{ config.OCR_API_AUTH_PREFIX }}">
+      </label>
+      <label>API Key
+        <input type="password" name="ocr_api_key" placeholder="{{ masked(config.OCR_API_KEY) }}" autocomplete="off">
+      </label>
+      <label>文件字段名
+        <input name="ocr_api_file_field" value="{{ config.OCR_API_FILE_FIELD }}">
+      </label>
+      <label>文本 JSON 路径
+        <input name="ocr_api_text_path" value="{{ config.OCR_API_TEXT_PATH }}" placeholder="data.text">
+      </label>
+    </div>
+  </section>
+
+  <section class="panel stack">
+    <h2>百度 OCR API</h2>
+    <div class="form-grid">
+      <label>API Key
+        <input type="password" name="baidu_ocr_api_key" placeholder="{{ masked(config.BAIDU_OCR_API_KEY) }}" autocomplete="off">
+      </label>
+      <label>Secret Key
+        <input type="password" name="baidu_ocr_secret_key" placeholder="{{ masked(config.BAIDU_OCR_SECRET_KEY) }}" autocomplete="off">
+      </label>
+      <label>Endpoint
+        <input name="baidu_ocr_endpoint" value="{{ config.BAIDU_OCR_ENDPOINT }}">
+      </label>
+      <label>状态
+        <input value="{{ '已配置' if configured(config.BAIDU_OCR_API_KEY) and configured(config.BAIDU_OCR_SECRET_KEY) else '未配置' }}" disabled>
+      </label>
+    </div>
+  </section>
+
+  <div class="actions">
+    <button class="btn primary" type="submit">保存设置</button>
+  </div>
+</form>
+{% endblock %}

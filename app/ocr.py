@@ -1,7 +1,10 @@
 from dataclasses import dataclass
+import base64
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+import requests
 
 
 @dataclass
@@ -14,19 +17,24 @@ _ENGINE = None
 _BACKEND = None
 
 
-def recognize_file(path: str | Path) -> OcrResult:
+def recognize_file(path: str | Path, config: dict[str, str] | None = None) -> OcrResult:
     file_path = Path(path)
     if not file_path.exists():
         raise FileNotFoundError(str(file_path))
+    backend = _config_value(config, "OCR_BACKEND", "rapidocr").lower()
+    if backend == "api":
+        return _recognize_with_api(file_path, config or {})
+    if backend == "baidu":
+        return _recognize_with_baidu(file_path, config or {})
     if file_path.suffix.lower() == ".pdf":
-        return _recognize_pdf(file_path)
-    return _recognize_image(file_path)
+        return _recognize_pdf(file_path, config)
+    return _recognize_image(file_path, config)
 
 
-def _get_engine():
+def _get_engine(config: dict[str, str] | None = None):
     global _BACKEND, _ENGINE
-    if _ENGINE is None:
-        backend = os.getenv("OCR_BACKEND", "rapidocr").lower()
+    backend = _config_value(config, "OCR_BACKEND", "rapidocr").lower()
+    if _ENGINE is None or _BACKEND != backend:
         if backend == "paddle":
             _ENGINE = _get_paddle_engine()
             _BACKEND = "paddle"
@@ -54,8 +62,8 @@ def _get_paddle_engine():
         return PaddleOCR(**options)
 
 
-def _recognize_image(path: Path) -> OcrResult:
-    backend, engine = _get_engine()
+def _recognize_image(path: Path, config: dict[str, str] | None = None) -> OcrResult:
+    backend, engine = _get_engine(config)
     if backend == "rapidocr":
         result, _ = engine(str(path))
     else:
@@ -63,7 +71,7 @@ def _recognize_image(path: Path) -> OcrResult:
     return _flatten_result(result)
 
 
-def _recognize_pdf(path: Path) -> OcrResult:
+def _recognize_pdf(path: Path, config: dict[str, str] | None = None) -> OcrResult:
     try:
         import fitz
     except ImportError as exc:
@@ -78,13 +86,77 @@ def _recognize_pdf(path: Path) -> OcrResult:
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
             image_path = Path(tmpdir) / f"page-{page_index + 1}.png"
             pix.save(image_path)
-            item = _recognize_image(image_path)
+            item = _recognize_image(image_path, config)
             if item.text:
                 texts.append(item.text)
             if item.confidence is not None:
                 confidences.append(item.confidence)
     confidence = sum(confidences) / len(confidences) if confidences else None
     return OcrResult(text="\n".join(texts), confidence=confidence)
+
+
+def _recognize_with_api(path: Path, config: dict[str, str]) -> OcrResult:
+    url = _config_value(config, "OCR_API_URL")
+    if not url:
+        raise RuntimeError("OCR API URL is not configured")
+    field = _config_value(config, "OCR_API_FILE_FIELD", "file")
+    headers = {}
+    api_key = _config_value(config, "OCR_API_KEY")
+    if api_key:
+        header = _config_value(config, "OCR_API_AUTH_HEADER", "Authorization")
+        prefix = _config_value(config, "OCR_API_AUTH_PREFIX", "Bearer ")
+        if prefix.lower() == "bearer":
+            prefix = "Bearer "
+        headers[header] = f"{prefix}{api_key}"
+    with path.open("rb") as handle:
+        response = requests.post(
+            url,
+            headers=headers,
+            files={field: (path.name, handle)},
+            timeout=90,
+        )
+    response.raise_for_status()
+    data = response.json()
+    text = _value_by_path(data, _config_value(config, "OCR_API_TEXT_PATH", "text"))
+    if isinstance(text, list):
+        text = "\n".join(str(item) for item in text)
+    return OcrResult(text=str(text or ""), confidence=None)
+
+
+def _recognize_with_baidu(path: Path, config: dict[str, str]) -> OcrResult:
+    api_key = _config_value(config, "BAIDU_OCR_API_KEY")
+    secret_key = _config_value(config, "BAIDU_OCR_SECRET_KEY")
+    endpoint = _config_value(
+        config,
+        "BAIDU_OCR_ENDPOINT",
+        "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic",
+    )
+    if not api_key or not secret_key:
+        raise RuntimeError("Baidu OCR API key and secret key are not configured")
+    token_response = requests.post(
+        "https://aip.baidubce.com/oauth/2.0/token",
+        params={
+            "grant_type": "client_credentials",
+            "client_id": api_key,
+            "client_secret": secret_key,
+        },
+        timeout=30,
+    )
+    token_response.raise_for_status()
+    access_token = token_response.json().get("access_token")
+    if not access_token:
+        raise RuntimeError("Baidu OCR access token response did not include access_token")
+    response = requests.post(
+        endpoint,
+        params={"access_token": access_token},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data={"image": base64.b64encode(path.read_bytes()).decode("ascii")},
+        timeout=90,
+    )
+    response.raise_for_status()
+    data = response.json()
+    words = data.get("words_result") or []
+    return OcrResult(text="\n".join(str(item.get("words", "")) for item in words), confidence=None)
 
 
 def _flatten_result(result) -> OcrResult:
@@ -123,3 +195,21 @@ def _flatten_result(result) -> OcrResult:
     visit(result)
     confidence = sum(confidences) / len(confidences) if confidences else None
     return OcrResult(text="\n".join(texts), confidence=confidence)
+
+
+def _config_value(config: dict[str, str] | None, key: str, default: str = "") -> str:
+    if config is not None:
+        return config.get(key, default)
+    return os.getenv(key, default)
+
+
+def _value_by_path(data, path: str):
+    current = data
+    for part in path.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.isdigit():
+            current = current[int(part)]
+        else:
+            return None
+    return current

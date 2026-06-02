@@ -128,7 +128,7 @@ def test_ocr_import_to_candidate_flow(client, monkeypatch):
     monkeypatch.setattr(
         app.main,
         "recognize_file",
-        lambda _: OcrResult(
+        lambda *_: OcrResult(
             text="2024-01-02 161725 招商中证白酒 buy 1000 500 2.0000 0",
             confidence=0.99,
         ),
@@ -151,3 +151,34 @@ def test_ocr_import_to_candidate_flow(client, monkeypatch):
     page = client.get("/candidates")
     assert "161725" in page.text
     assert "pending" in page.text
+
+
+def test_settings_page_saves_runtime_config(client):
+    login(client)
+    response = client.post(
+        "/settings",
+        data={
+            "deepseek_api_key": "sk-test-secret",
+            "deepseek_base_url": "https://api.deepseek.example",
+            "deepseek_model": "deepseek-chat",
+            "ocr_backend": "api",
+            "ocr_api_provider": "generic",
+            "ocr_api_url": "https://ocr.example/parse",
+            "ocr_api_auth_header": "X-API-Key",
+            "ocr_api_auth_prefix": "",
+            "ocr_api_key": "ocr-secret",
+            "ocr_api_file_field": "image",
+            "ocr_api_text_path": "data.text",
+            "baidu_ocr_api_key": "",
+            "baidu_ocr_secret_key": "",
+            "baidu_ocr_endpoint": "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    page = client.get("/settings")
+    assert "api.deepseek.example" in page.text
+    assert "https://ocr.example/parse" in page.text
+    assert "sk-test-secret" not in page.text
+    assert "ocr-secret" not in page.text
+    assert "末尾 cret" in page.text

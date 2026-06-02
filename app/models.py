@@ -27,6 +27,13 @@ class ImportStatus(str, Enum):
     error = "error"
 
 
+class AppSetting(SQLModel, table=True):
+    key: str = Field(primary_key=True)
+    value: str = ""
+    is_secret: bool = False
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class ImportDocument(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     file_name: Optional[str] = None

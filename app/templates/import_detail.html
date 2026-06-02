@@ -28,8 +28,9 @@
     </form>
   </div>
   {% if not llm_configured %}
-  <p class="muted">DeepSeek 尚未配置。需要在 `/etc/fund-ledger.env` 加 `DEEPSEEK_API_KEY` 后重启服务。</p>
+  <p class="muted">DeepSeek 尚未配置。可在设置页保存 API Key 后直接使用。</p>
   {% endif %}
+  <p class="muted">当前 OCR 后端：{{ ocr_backend }}。可在设置页切换本地 OCR 或 OCR API。</p>
 </section>
 
 <section class="panel stack" style="margin-top:16px">

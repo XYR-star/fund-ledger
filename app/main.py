@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, desc, select
 from starlette.status import HTTP_303_SEE_OTHER
 
+from .app_settings import configured, masked, runtime_settings, save_settings
 from .auth import add_session_middleware, current_user, login_user, logout_user, verify_login
 from .config import ensure_data_dirs, settings
 from .db import get_session, init_db
@@ -15,6 +16,7 @@ from .extractors import extract_candidates, hash_content, hash_file
 from .llm import is_deepseek_configured, parse_with_deepseek
 from .models import (
     CandidateStatus,
+    AppSetting,
     FundNav,
     FundTransaction,
     FundTransactionCandidate,
@@ -210,6 +212,68 @@ def dashboard_head(request: Request):
     return Response(status_code=200)
 
 
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(
+    request: Request,
+    message: str = "",
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    config = runtime_settings(session)
+    return templates.TemplateResponse(
+        "settings.html",
+        {
+            "request": request,
+            "config": config,
+            "message": message,
+            "masked": masked,
+            "configured": configured,
+        },
+    )
+
+
+@app.post("/settings")
+def settings_update(
+    deepseek_api_key: str = Form(""),
+    deepseek_base_url: str = Form("https://api.deepseek.com"),
+    deepseek_model: str = Form("deepseek-chat"),
+    ocr_backend: str = Form("rapidocr"),
+    ocr_api_provider: str = Form("generic"),
+    ocr_api_url: str = Form(""),
+    ocr_api_auth_header: str = Form("Authorization"),
+    ocr_api_auth_prefix: str = Form("Bearer "),
+    ocr_api_key: str = Form(""),
+    ocr_api_file_field: str = Form("file"),
+    ocr_api_text_path: str = Form("text"),
+    baidu_ocr_api_key: str = Form(""),
+    baidu_ocr_secret_key: str = Form(""),
+    baidu_ocr_endpoint: str = Form("https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic"),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    current = runtime_settings(session)
+    values = {
+        "DEEPSEEK_API_KEY": deepseek_api_key.strip() or current.get("DEEPSEEK_API_KEY", ""),
+        "DEEPSEEK_BASE_URL": deepseek_base_url.strip() or "https://api.deepseek.com",
+        "DEEPSEEK_MODEL": deepseek_model.strip() or "deepseek-chat",
+        "OCR_BACKEND": ocr_backend,
+        "OCR_API_PROVIDER": ocr_api_provider,
+        "OCR_API_URL": ocr_api_url.strip(),
+        "OCR_API_AUTH_HEADER": ocr_api_auth_header.strip() or "Authorization",
+        "OCR_API_AUTH_PREFIX": ocr_api_auth_prefix,
+        "OCR_API_KEY": ocr_api_key.strip() or current.get("OCR_API_KEY", ""),
+        "OCR_API_FILE_FIELD": ocr_api_file_field.strip() or "file",
+        "OCR_API_TEXT_PATH": ocr_api_text_path.strip() or "text",
+        "BAIDU_OCR_API_KEY": baidu_ocr_api_key.strip() or current.get("BAIDU_OCR_API_KEY", ""),
+        "BAIDU_OCR_SECRET_KEY": baidu_ocr_secret_key.strip()
+        or current.get("BAIDU_OCR_SECRET_KEY", ""),
+        "BAIDU_OCR_ENDPOINT": baidu_ocr_endpoint.strip()
+        or "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic",
+    }
+    save_settings(session, values)
+    return redirect("/settings?message=设置已保存")
+
+
 @app.get("/upload", response_class=HTMLResponse)
 def upload_page(request: Request, _: str = Depends(require_user)):
     return templates.TemplateResponse("upload.html", {"request": request})
@@ -257,9 +321,10 @@ def imports_page(
     session: Session = Depends(get_session),
 ):
     documents = session.exec(select(ImportDocument).order_by(desc(ImportDocument.created_at))).all()
+    config = runtime_settings(session)
     return templates.TemplateResponse(
         "imports.html",
-        {"request": request, "documents": documents, "llm_configured": is_deepseek_configured()},
+        {"request": request, "documents": documents, "llm_configured": is_deepseek_configured(config)},
     )
 
 
@@ -274,13 +339,15 @@ def import_detail_page(
     document = session.get(ImportDocument, document_id)
     if not document:
         raise HTTPException(status_code=404)
+    config = runtime_settings(session)
     return templates.TemplateResponse(
         "import_detail.html",
         {
             "request": request,
             "document": document,
             "message": message,
-            "llm_configured": is_deepseek_configured(),
+            "llm_configured": is_deepseek_configured(config),
+            "ocr_backend": config.get("OCR_BACKEND", "rapidocr"),
         },
     )
 
@@ -301,7 +368,7 @@ def import_run_ocr(
     session.add(document)
     session.commit()
     try:
-        result = recognize_file(document.source_file)
+        result = recognize_file(document.source_file, runtime_settings(session))
     except Exception as exc:
         document.status = ImportStatus.error
         document.error_message = str(exc)
@@ -352,8 +419,9 @@ def import_parse(
         return redirect(f"/imports/{document_id}?message=没有可解析文本")
 
     parsed_count = 0
-    if use_llm and is_deepseek_configured():
-        llm_result = parse_with_deepseek(text)
+    config = runtime_settings(session)
+    if use_llm and is_deepseek_configured(config):
+        llm_result = parse_with_deepseek(text, config)
         if llm_result and llm_result.parsed_json:
             document.ocr_text = llm_result.raw_response
             parsed_count = create_candidates_from_rows(
@@ -554,6 +622,10 @@ def backup_export(
         "imports": [
             serialize_model(item)
             for item in session.exec(select(ImportDocument).order_by(ImportDocument.id)).all()
+        ],
+        "settings": [
+            {**serialize_model(item), "value": "***" if item.is_secret and item.value else item.value}
+            for item in session.exec(select(AppSetting).order_by(AppSetting.key)).all()
         ],
         "transactions": [
             serialize_model(item)
