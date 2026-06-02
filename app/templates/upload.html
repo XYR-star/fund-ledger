@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}上传 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>上传交易记录</h1>
+    <p class="muted">首版先支持粘贴文本生成候选交易，文件会保存为附件。</p>
+  </div>
+</div>
+
+<section class="panel stack">
+  <form class="stack" method="post" action="/upload" enctype="multipart/form-data">
+    <label>截图 / PDF 附件
+      <input type="file" name="file" accept="image/*,.pdf">
+    </label>
+    <label>交易文本
+      <textarea name="raw_text" placeholder="2024-01-02 161725 招商中证白酒 buy 1000 - 1.2345 1.00"></textarea>
+    </label>
+    <p class="sample">格式：交易日 基金代码 基金名 动作 金额 份额 净值 手续费。动作支持 buy/sell/申购/赎回/分红/红利再投；未知字段用 -。</p>
+    <div class="actions">
+      <button class="btn primary" type="submit">生成候选交易</button>
+      <a class="btn" href="/candidates">查看候选</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

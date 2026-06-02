@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>仪表盘</h1>
+    <p class="muted">当前持仓和待处理事项</p>
+  </div>
+  <a class="btn primary" href="/upload">新增记录</a>
+</div>
+
+<section class="grid">
+  <div class="card metric"><div class="label">总市值</div><div class="value">¥{{ "%.2f"|format(summary.total_value) }}</div></div>
+  <div class="card metric"><div class="label">总成本</div><div class="value">¥{{ "%.2f"|format(summary.total_cost) }}</div></div>
+  <div class="card metric"><div class="label">浮盈亏</div><div class="value">¥{{ "%.2f"|format(summary.total_profit) }}</div></div>
+  <div class="card metric"><div class="label">基金 / 待确认</div><div class="value">{{ summary.fund_count }} / {{ summary.pending_count }}</div></div>
+</section>
+
+<section class="panel stack" style="margin-top:16px">
+  <div class="page-title">
+    <h2>持仓预览</h2>
+    <a class="btn" href="/holdings">查看全部</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>代码</th><th>名称</th><th>份额</th><th>最新净值</th><th>市值</th><th>浮盈亏</th></tr></thead>
+      <tbody>
+        {% for h in holdings %}
+        <tr>
+          <td>{{ h.fund_code }}</td>
+          <td>{{ h.fund_name or "-" }}</td>
+          <td>{{ "%.2f"|format(h.share) }}</td>
+          <td>{% if h.latest_nav %}{{ "%.4f"|format(h.latest_nav) }}{% else %}-{% endif %}</td>
+          <td>¥{{ "%.2f"|format(h.market_value) }}</td>
+          <td>¥{{ "%.2f"|format(h.profit) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="muted">暂无持仓。先上传或粘贴交易记录。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted">最近净值日期：{{ summary.latest_nav_date or "暂无" }}</p>
+</section>
+{% endblock %}

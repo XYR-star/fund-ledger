@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Fund Ledger{% endblock %}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/">Fund Ledger</a>
+      <nav class="nav">
+        <a href="/">仪表盘</a>
+        <a href="/upload">上传</a>
+        <a href="/candidates">候选</a>
+        <a href="/transactions">流水</a>
+        <a href="/holdings">持仓</a>
+        <a href="/nav">净值</a>
+        <a href="/backup/export">备份</a>
+        <form method="post" action="/logout"><button type="submit">退出</button></form>
+      </nav>
+    </header>
+    <main class="container">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

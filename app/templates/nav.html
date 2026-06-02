@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}净值 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>净值同步</h1>
+    <p class="muted">使用 efinance 获取历史净值。</p>
+  </div>
+</div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+<section class="panel stack">
+  <form class="form-grid" method="post" action="/nav/sync">
+    <label>基金代码
+      <input name="fund_code" placeholder="161725" required>
+    </label>
+    <div class="actions"><button class="btn primary" type="submit">同步</button></div>
+  </form>
+</section>
+<section class="panel stack" style="margin-top:16px">
+  <h2>已知基金</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>代码</th><th>最近净值日</th><th>单位净值</th><th>操作</th></tr></thead>
+      <tbody>
+        {% for code in funds %}
+        {% set item = latest[code] %}
+        <tr>
+          <td>{{ code }}</td>
+          <td>{{ item.nav_date if item else "-" }}</td>
+          <td>{% if item %}{{ "%.4f"|format(item.unit_nav) }}{% else %}-{% endif %}</td>
+          <td><form method="post" action="/nav/sync"><input type="hidden" name="fund_code" value="{{ code }}"><button class="btn" type="submit">同步</button></form></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">暂无基金代码。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

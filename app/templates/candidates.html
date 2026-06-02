@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}候选交易 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>候选交易</h1>
+    <p class="muted">确认后才会进入正式流水并影响持仓。</p>
+  </div>
+  <a class="btn primary" href="/upload">新增</a>
+</div>
+
+<div class="stack">
+{% for c in candidates %}
+  <section class="panel stack">
+    <div class="actions">
+      <span class="badge">{{ c.status }}</span>
+      <strong>{{ c.fund_code }} {{ c.fund_name }}</strong>
+      <span class="muted">{{ c.raw_text }}</span>
+    </div>
+    <form class="form-grid" method="post" action="/candidates/{{ c.id }}/update">
+      <label>代码<input name="fund_code" value="{{ c.fund_code }}" required></label>
+      <label>名称<input name="fund_name" value="{{ c.fund_name }}"></label>
+      <label>交易日<input type="date" name="trade_date" value="{{ c.trade_date }}" required></label>
+      <label>确认日<input type="date" name="confirm_date" value="{{ c.confirm_date or '' }}"></label>
+      <label>动作
+        <select name="action">
+          {% for action in actions %}
+          <option value="{{ action.value }}" {% if c.action == action %}selected{% endif %}>{{ action.value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>金额<input type="number" step="0.01" name="amount_cny" value="{{ c.amount_cny if c.amount_cny is not none else '' }}"></label>
+      <label>份额<input type="number" step="0.0001" name="share" value="{{ c.share if c.share is not none else '' }}"></label>
+      <label>净值<input type="number" step="0.0001" name="nav" value="{{ c.nav if c.nav is not none else '' }}"></label>
+      <label>手续费<input type="number" step="0.01" name="fee" value="{{ c.fee if c.fee is not none else '' }}"></label>
+      <div class="actions">
+        <button class="btn" type="submit">保存</button>
+      </div>
+    </form>
+    <div class="actions">
+      {% if c.status.value == "pending" %}
+      <form method="post" action="/candidates/{{ c.id }}/confirm"><button class="btn primary" type="submit">确认入账</button></form>
+      <form method="post" action="/candidates/{{ c.id }}/ignore"><button class="btn warn" type="submit">忽略</button></form>
+      {% endif %}
+    </div>
+  </section>
+{% else %}
+  <section class="panel muted">暂无候选交易。</section>
+{% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 - Fund Ledger</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="login">
+    <section class="panel stack">
+      <div>
+        <h1>Fund Ledger</h1>
+        <p class="muted">应用内登录</p>
+      </div>
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      <form class="stack" method="post" action="/login">
+        <input type="hidden" name="next" value="{{ next }}">
+        <label>用户名
+          <input name="username" autocomplete="username" required>
+        </label>
+        <label>密码
+          <input name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="btn primary" type="submit">登录</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
