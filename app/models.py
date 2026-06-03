@@ -50,6 +50,7 @@ class FundRule(SQLModel, table=True):
     sell_confirm_days: int = 1
     cutoff_time: str = "15:00"
     buy_fee_rate: float = 0.0
+    fund_type: str = ""
     sync_source: str = ""
     synced_at: Optional[datetime] = None
     notes: str = ""

@@ -56,7 +56,9 @@
         {% for tick in chart.y_ticks %}
         <line class="chart-grid-line" x1="0" y1="{{ tick.y }}" x2="100" y2="{{ tick.y }}"/>
         {% endfor %}
+        {% if chart.benchmark_area %}<path class="chart-area benchmark-fill" d="{{ chart.benchmark_area }}"/>{% endif %}
         {% if chart.benchmark_path %}<path class="chart-line benchmark-line" d="{{ chart.benchmark_path }}"/>{% endif %}
+        {% if chart.svg_area %}<path class="chart-area fund-fill" d="{{ chart.svg_area }}"/>{% endif %}
         <path class="chart-line fund-line" d="{{ chart.svg_path }}"/>
         {% for marker in chart.marker_positions %}
         <circle class="{{ marker.action }}-marker" cx="{{ marker.x }}" cy="{{ marker.y }}" r="1.6">

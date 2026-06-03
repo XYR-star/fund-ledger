@@ -396,7 +396,8 @@ async def test_batch_upload_auto_imports_multiple_files(client, monkeypatch):
     assert "one.png" in imports.text
     assert "two.png" in imports.text
 
-    page = await wait_for_text(client, "/candidates", "005827")
+    await wait_for_text(client, "/candidates", "005827")
+    page = await wait_for_text(client, "/candidates", "161725")
     assert "161725" in page.text
     assert "005827" in page.text
 

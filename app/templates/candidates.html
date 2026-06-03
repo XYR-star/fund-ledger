@@ -6,7 +6,10 @@
     <h1>候选交易</h1>
     <p class="muted">确认后才会进入正式流水并影响持仓。</p>
   </div>
-  <a class="btn primary" href="/upload">新增</a>
+  <div class="actions">
+    <form method="post" action="/candidates/confirm-all"><button class="btn primary" type="submit">一键确认全部已匹配</button></form>
+    <a class="btn" href="/upload">新增</a>
+  </div>
 </div>
 
 <div class="stack">
@@ -15,14 +18,25 @@
     <div class="actions">
       <span class="badge">{{ c.status }}</span>
       <strong>{{ c.fund_code }} {{ c.fund_name }}</strong>
+      {% if c.fund_code == "000000" %}
+      <form method="post" action="/candidates/{{ c.id }}/suggest-code" style="display:inline"><button class="btn primary" type="submit">搜索代码</button></form>
+      {% endif %}
       <span class="muted">{{ c.raw_text }}</span>
     </div>
     <form class="form-grid" method="post" action="/candidates/{{ c.id }}/update">
+      <input type="hidden" name="trade_date" value="{{ c.trade_date }}">
+      <input type="hidden" name="confirm_date" value="{{ c.confirm_date or '' }}">
       <label>代码<input name="fund_code" value="{{ c.fund_code }}" required></label>
       <label>名称<input name="fund_name" value="{{ c.fund_name }}"></label>
-      <label>交易日<input type="date" name="trade_date" value="{{ c.trade_date }}" required></label>
+      <div>
+        <label class="muted">交易日</label>
+        <span>{{ c.trade_date }}</span>
+      </div>
       <label>提交时间<input type="time" name="submitted_at" value="{{ c.submitted_at.strftime('%H:%M') if c.submitted_at else '' }}"></label>
-      <label>确认日<input type="date" name="confirm_date" value="{{ c.confirm_date or '' }}"></label>
+      <div>
+        <label class="muted">确认日</label>
+        <span>{% if c.confirm_date %}{{ c.confirm_date }}{% else %}（待计算）{% endif %}</span>
+      </div>
       <label>动作
         <select name="action">
           {% for action in actions %}

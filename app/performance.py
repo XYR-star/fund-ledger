@@ -40,7 +40,9 @@ class FundPerformanceChart:
     benchmark_points: list[ChartPoint]
     trade_markers: list[TradeMarker]
     svg_path: str
+    svg_area: str
     benchmark_path: str
+    benchmark_area: str
     marker_positions: list[dict[str, Any]]
     y_ticks: list[dict[str, Any]]
     start_date: date | None
@@ -108,7 +110,9 @@ def build_performance_charts(
                 benchmark_points=benchmark_points,
                 trade_markers=trade_markers,
                 svg_path=svg_path(fund_points, y_min, y_max),
+                svg_area=svg_area_path(fund_points, y_min, y_max),
                 benchmark_path=svg_path(benchmark_points, y_min, y_max),
+                benchmark_area=svg_area_path(benchmark_points, y_min, y_max),
                 marker_positions=marker_positions(trade_markers, fund_points[0].date, fund_points[-1].date, y_min, y_max),
                 y_ticks=y_ticks(y_min, y_max),
                 start_date=fund_points[0].date,
@@ -287,6 +291,19 @@ def svg_path(points: list[ChartPoint], y_min: float, y_max: float) -> str:
     end = points[-1].date
     coords = [point_to_svg(point.date, point.value, start, end, y_min, y_max) for point in points]
     return " ".join(("M" if index == 0 else "L") + f"{x:.2f},{y:.2f}" for index, (x, y) in enumerate(coords))
+
+
+def svg_area_path(points: list[ChartPoint], y_min: float, y_max: float) -> str:
+    if len(points) < 2:
+        return ""
+    start = points[0].date
+    end = points[-1].date
+    coords = [point_to_svg(point.date, point.value, start, end, y_min, y_max) for point in points]
+    parts = ["M" + f"{coords[0][0]:.2f},{coords[0][1]:.2f}"]
+    for x, y in coords:
+        parts.append(f"L{x:.2f},{y:.2f}")
+    parts.append(f"L{coords[-1][0]:.2f},100 L{coords[0][0]:.2f},100 Z")
+    return " ".join(parts)
 
 
 def marker_positions(

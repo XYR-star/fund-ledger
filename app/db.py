@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from .config import ensure_data_dirs, settings
@@ -10,6 +10,14 @@ engine = create_engine(
     f"sqlite:///{settings.db_path}",
     connect_args={"check_same_thread": False},
 )
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
 
 
 def init_db() -> None:
@@ -35,6 +43,8 @@ def migrate_schema() -> None:
             connection.execute(text("ALTER TABLE fundrule ADD COLUMN sync_source TEXT DEFAULT ''"))
         if "synced_at" not in columns:
             connection.execute(text("ALTER TABLE fundrule ADD COLUMN synced_at TIMESTAMP"))
+        if "fund_type" not in columns:
+            connection.execute(text("ALTER TABLE fundrule ADD COLUMN fund_type TEXT DEFAULT ''"))
         if "fundtransactioncandidate" in tables:
             candidate_columns = {
                 row[1] for row in connection.execute(text("PRAGMA table_info(fundtransactioncandidate)"))

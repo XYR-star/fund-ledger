@@ -55,60 +55,63 @@
 
 <div class="stack" style="margin-top:16px">
 {% for rule in rules %}
-  <section class="panel stack">
-    <div class="actions">
-      <strong>{{ rule.fund_code }} {{ rule.fund_name }}</strong>
-      <span class="badge">买入 T+{{ rule.buy_confirm_days }}</span>
-      <span class="badge">卖出 T+{{ rule.sell_confirm_days }}</span>
-      <span class="badge">{{ rule.cutoff_time }}</span>
-      <span class="badge">买入费率 {{ "%.4f"|format(rule.buy_fee_rate) }}</span>
-      {% if rule.sync_source %}<span class="badge">{{ rule.sync_source }}</span>{% endif %}
-      {% if rule.synced_at %}<span class="badge">{{ rule.synced_at }}</span>{% endif %}
+  <section class="panel">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <strong>{{ rule.fund_code }} {{ rule.fund_name }}</strong>
+        {% if rule.fund_type %}<span class="badge">{{ rule.fund_type }}</span>{% endif %}
+        <span class="badge">买入 T+{{ rule.buy_confirm_days }}</span>
+        <span class="badge">卖出 T+{{ rule.sell_confirm_days }}</span>
+        <span class="badge">{{ rule.cutoff_time }}</span>
+        <span class="badge">买入费率 {{ "%.4f"|format(rule.buy_fee_rate) }}</span>
+        {% if rule.sync_source %}<span class="badge">{{ rule.sync_source }}</span>{% endif %}
+      </div>
+      <button class="btn small" type="button" onclick="var d=this.closest('section').querySelector('.rule-detail');d.classList.toggle('hidden');this.textContent=d.classList.contains('hidden')?'展开':'收起'">展开</button>
     </div>
-    {% if rule.notes %}<p class="muted">{{ rule.notes }}</p>{% endif %}
-    <form method="post" action="/fund-rules/sync">
-      <input type="hidden" name="fund_code" value="{{ rule.fund_code }}">
-      <button class="btn" type="submit">重新同步</button>
-    </form>
-    <form class="form-grid" method="post" action="/fund-rules">
-      <input type="hidden" name="fund_code" value="{{ rule.fund_code }}">
-      <label>基金名称<input name="fund_name" value="{{ rule.fund_name }}"></label>
-      <label>买入确认 T+<input type="number" min="0" step="1" name="buy_confirm_days" value="{{ rule.buy_confirm_days }}"></label>
-      <label>卖出确认 T+<input type="number" min="0" step="1" name="sell_confirm_days" value="{{ rule.sell_confirm_days }}"></label>
-      <label>截止时间<input name="cutoff_time" value="{{ rule.cutoff_time }}"></label>
-      <label>买入费率<input type="number" min="0" step="0.0001" name="buy_fee_rate" value="{{ rule.buy_fee_rate }}"></label>
-      <label>备注<input name="notes" value="{{ rule.notes }}"></label>
-      <div class="actions"><button class="btn" type="submit">更新</button></div>
-    </form>
-
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>持有天数起</th><th>持有天数止</th><th>赎回费率</th><th>操作</th></tr></thead>
-        <tbody>
-          {% for tier in tiers_by_code.get(rule.fund_code, []) %}
-          <tr>
-            <td>{{ tier.min_holding_days }}</td>
-            <td>{{ tier.max_holding_days if tier.max_holding_days is not none else "以上" }}</td>
-            <td>{{ "%.4f"|format(tier.redemption_fee_rate) }}</td>
-            <td>
-              <form method="post" action="/fund-rules/tiers/{{ tier.id }}/delete">
-                <button class="btn danger" type="submit">删除</button>
-              </form>
-            </td>
-          </tr>
-          {% else %}
-          <tr><td colspan="4" class="muted">暂无赎回费率档。</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    {% if rule.notes %}<p class="muted" style="margin:4px 0 0">{{ rule.notes }}</p>{% endif %}
+    <div class="rule-detail hidden stack" style="margin-top:12px;">
+      <form method="post" action="/fund-rules/sync">
+        <input type="hidden" name="fund_code" value="{{ rule.fund_code }}">
+        <button class="btn" type="submit">重新同步</button>
+      </form>
+      <form class="form-grid" method="post" action="/fund-rules">
+        <input type="hidden" name="fund_code" value="{{ rule.fund_code }}">
+        <label>基金名称<input name="fund_name" value="{{ rule.fund_name }}"></label>
+        <label>买入确认 T+<input type="number" min="0" step="1" name="buy_confirm_days" value="{{ rule.buy_confirm_days }}"></label>
+        <label>卖出确认 T+<input type="number" min="0" step="1" name="sell_confirm_days" value="{{ rule.sell_confirm_days }}"></label>
+        <label>截止时间<input name="cutoff_time" value="{{ rule.cutoff_time }}"></label>
+        <label>买入费率<input type="number" min="0" step="0.0001" name="buy_fee_rate" value="{{ rule.buy_fee_rate }}"></label>
+        <label>备注<input name="notes" value="{{ rule.notes }}"></label>
+        <div class="actions"><button class="btn" type="submit">更新</button></div>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>持有天数起</th><th>持有天数止</th><th>赎回费率</th><th>操作</th></tr></thead>
+          <tbody>
+            {% for tier in tiers_by_code.get(rule.fund_code, []) %}
+            <tr>
+              <td>{{ tier.min_holding_days }}</td>
+              <td>{{ tier.max_holding_days if tier.max_holding_days is not none else "以上" }}</td>
+              <td>{{ "%.4f"|format(tier.redemption_fee_rate) }}</td>
+              <td>
+                <form method="post" action="/fund-rules/tiers/{{ tier.id }}/delete">
+                  <button class="btn danger" type="submit">删除</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="muted">暂无赎回费率档。</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <form class="form-grid" method="post" action="/fund-rules/{{ rule.fund_code }}/tiers">
+        <label>持有天数起<input type="number" min="0" step="1" name="min_holding_days" value="0"></label>
+        <label>持有天数止<input type="number" min="0" step="1" name="max_holding_days" placeholder="留空表示以上"></label>
+        <label>赎回费率<input type="number" min="0" step="0.0001" name="redemption_fee_rate" value="0"></label>
+        <div class="actions"><button class="btn" type="submit">添加费率档</button></div>
+      </form>
     </div>
-
-    <form class="form-grid" method="post" action="/fund-rules/{{ rule.fund_code }}/tiers">
-      <label>持有天数起<input type="number" min="0" step="1" name="min_holding_days" value="0"></label>
-      <label>持有天数止<input type="number" min="0" step="1" name="max_holding_days" placeholder="留空表示以上"></label>
-      <label>赎回费率<input type="number" min="0" step="0.0001" name="redemption_fee_rate" value="0"></label>
-      <div class="actions"><button class="btn" type="submit">添加费率档</button></div>
-    </form>
   </section>
 {% else %}
   <section class="panel muted">暂无基金规则。导入时未配置的基金会使用买入 T+1、卖出 T+1、15:00 截止、买入费率 0。</section>

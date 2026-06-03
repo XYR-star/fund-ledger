@@ -15,9 +15,9 @@ from .auth import add_session_middleware, current_user, login_user, logout_user,
 from .config import ensure_data_dirs, settings
 from .db import engine, get_session, init_db
 from .extractors import extract_candidates, hash_content, hash_file
-from .fund_rule_sync import fetch_fund_rule_from_akshare, sync_timestamp
+from .fund_rule_sync import fetch_fund_rule_from_akshare, search_fund_by_name, sync_timestamp
 from .jobs import create_and_enqueue, recover_interrupted_jobs, register_job
-from .llm import is_deepseek_configured, parse_with_deepseek
+from .llm import is_deepseek_configured, parse_with_deepseek, resolve_fund_code_by_name
 from .models import (
     BackgroundJob,
     BenchmarkNav,
@@ -88,7 +88,8 @@ def create_candidates_from_text(
     raw_text: str,
     source_file: str | None = None,
     source_hash: str | None = None,
-) -> int:
+    config: dict[str, str] | None = None,
+) -> tuple[int, list[str]]:
     extracted = extract_candidates(raw_text)
     if not extracted:
         return create_inferred_candidates_from_minimal_text(
@@ -96,27 +97,88 @@ def create_candidates_from_text(
             raw_text,
             source_file=source_file,
             source_hash=source_hash,
+            config=config,
         )
+    created = 0
+    warnings: list[str] = []
+    llm_cache: dict[str, str] = {}
+    known_names = known_fund_names(session)
     for item in extracted:
+        fund_code = item.fund_code.zfill(6)
+        if fund_code == "000000" and item.fund_name:
+            resolved = _resolve_fund_code(session, item.fund_name, known_names, llm_cache, warnings)
+            if resolved:
+                fund_code = resolved
+        if is_etf_fund(session, fund_code):
+            warnings.append(f"跳过 ETF 基金 {fund_code} {item.fund_name}")
+            continue
+        amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
+            session,
+            fund_code,
+            item.action,
+            item.amount_cny,
+            item.share,
+            item.nav,
+            item.trade_date,
+            submitted_at=None,
+        )
         session.add(
             FundTransactionCandidate(
-                fund_code=item.fund_code,
+                fund_code=fund_code,
                 fund_name=item.fund_name,
-                trade_date=item.trade_date,
+                trade_date=effective_trade_date,
                 submitted_at=None,
-                confirm_date=item.confirm_date,
+                confirm_date=confirm_date,
                 action=item.action,
-                amount_cny=item.amount_cny,
-                share=item.share,
+                amount_cny=amount_cny,
+                share=share,
                 nav=item.nav,
-                fee=item.fee,
+                fee=fee,
                 source_file=source_file,
                 source_hash=source_hash,
                 raw_text=item.raw_text,
                 confidence=item.confidence,
             )
         )
-    return len(extracted)
+        created += 1
+    return created, warnings
+
+
+def _resolve_fund_code(
+    session: Session,
+    fund_name: str,
+    known_names: dict[str, str],
+    llm_cache: dict[str, str],
+    warnings: list[str],
+) -> str | None:
+    if not fund_name:
+        return None
+    if fund_name in llm_cache:
+        return llm_cache[fund_name]
+    result = search_fund_by_name(fund_name)
+    if not result:
+        return None
+    code = result["fund_code"]
+    llm_cache[fund_name] = code
+    known_names[fund_name] = code
+    existing = session.get(FundRule, code)
+    if not existing:
+        rule = FundRule(
+            fund_code=code,
+            fund_name=result["fund_name"],
+            fund_type=result["fund_type"],
+            sync_source="resolved",
+            synced_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(rule)
+    elif not existing.fund_type:
+        existing.fund_type = result["fund_type"]
+        session.add(existing)
+    # commit minimal rule first so apply_trade_calculation can use the code
+    session.commit()
+    warnings.append(f"名称匹配 {fund_name} → {code}")
+    return code
 
 
 def create_inferred_candidates_from_minimal_text(
@@ -124,16 +186,23 @@ def create_inferred_candidates_from_minimal_text(
     raw_text: str,
     source_file: str | None = None,
     source_hash: str | None = None,
-) -> int:
+    config: dict[str, str] | None = None,
+) -> tuple[int, list[str]]:
     created = 0
+    warnings: list[str] = []
     known_names = known_fund_names(session)
+    llm_code_cache: dict[str, str] = {}
     for line in raw_text.splitlines():
         text = line.strip()
         if not text or text.startswith("#"):
             continue
         trade_day, submitted_at = extract_trade_datetime(text)
         amount = extract_amount(text)
-        if not trade_day or amount is None:
+        if not trade_day:
+            warnings.append(f"跳过（无法识别日期）：{text[:60]}")
+            continue
+        if amount is None:
+            warnings.append(f"跳过（无法识别金额）：{text[:60]}")
             continue
         action = infer_action(text)
         status = infer_candidate_status(text)
@@ -141,7 +210,15 @@ def create_inferred_candidates_from_minimal_text(
         fund_name = extract_fund_name(text, fund_code, known_names)
         if not fund_code and fund_name in known_names:
             fund_code = known_names[fund_name]
+        if not fund_code or fund_code == "000000":
+            resolved = _resolve_fund_code(session, fund_name, known_names, llm_code_cache, warnings)
+            if resolved:
+                fund_code = resolved
         fund_code = (fund_code or "000000").zfill(6)
+        if is_etf_fund(session, fund_code):
+            rule = get_fund_rule(session, fund_code)
+            warnings.append(f"跳过 ETF 基金 {fund_code} {rule.fund_name or fund_name}")
+            continue
         rule = get_fund_rule(session, fund_code)
         nav_item = find_effective_nav(session, fund_code, trade_day, submitted_at, rule)
         confirm_date = (
@@ -155,13 +232,17 @@ def create_inferred_candidates_from_minimal_text(
             else None
         )
         nav_value = nav_item.unit_nav if nav_item else None
+        money = is_money_fund(session, fund_code)
+        if money and nav_value is None:
+            nav_value = 1.0
         fee = 0.0 if action == TransactionAction.buy else None
         share = None
         if action == TransactionAction.buy and nav_value:
-            fee = round(amount * rule.buy_fee_rate, 2)
-            share = round((amount - fee) / nav_value, 4)
+            buy_fee_rate = 0.0 if money else rule.buy_fee_rate
+            fee = round(amount * buy_fee_rate, 2)
+            share = round((amount - fee) / nav_value, 2)
         if action == TransactionAction.sell and nav_value:
-            fee = infer_redemption_fee(session, fund_code, amount, nav_value, nav_item.nav_date)
+            fee = 0.0 if money else infer_redemption_fee(session, fund_code, amount, nav_value, nav_item.nav_date)
         session.add(
             FundTransactionCandidate(
                 status=status,
@@ -182,11 +263,14 @@ def create_inferred_candidates_from_minimal_text(
             )
         )
         created += 1
-    return created
+    return created, warnings
 
 
 def known_fund_names(session: Session) -> dict[str, str]:
     names: dict[str, str] = {}
+    for item in session.exec(select(FundRule)).all():
+        if item.fund_name and item.fund_code:
+            names[item.fund_name] = item.fund_code
     for item in session.exec(select(FundTransactionCandidate)).all():
         if item.fund_name and item.fund_code != "000000":
             names[item.fund_name] = item.fund_code
@@ -194,6 +278,29 @@ def known_fund_names(session: Session) -> dict[str, str]:
         if item.fund_name and item.fund_code != "000000":
             names[item.fund_name] = item.fund_code
     return names
+
+
+def is_etf_fund(session: Session, fund_code: str) -> bool:
+    if fund_code == "000000":
+        return False
+    rule = get_fund_rule(session, fund_code)
+    if not rule or not rule.fund_type:
+        return False
+    ft = rule.fund_type
+    if "ETF" not in ft and "场内" not in ft:
+        return False
+    if "联接" in ft or "连接" in ft:
+        return False
+    return True
+
+
+def is_money_fund(session: Session, fund_code: str) -> bool:
+    if fund_code == "000000":
+        return False
+    rule = get_fund_rule(session, fund_code)
+    if not rule or not rule.fund_type:
+        return False
+    return "货币" in rule.fund_type
 
 
 def extract_trade_datetime(text: str) -> tuple[date | None, time | None]:
@@ -220,8 +327,15 @@ def extract_fund_name(text: str, fund_code: str | None, known_names: dict[str, s
     cleaned = re.sub(r"\d{1,2}:\d{2}", " ", cleaned)
     if fund_code:
         cleaned = cleaned.replace(fund_code, " ")
-    cleaned = re.sub(r"[买入申购卖出赎回成功失败撤销取消已确认交易金额人民币元：:,.，。\d\s-]+", " ", cleaned)
-    parts = [part for part in re.split(r"\s+", cleaned.strip()) if part]
+    noise_words = r"买入|申购|卖出|赎回|成功|失败|撤销|取消|已确认|交易金额|人民币|现金分红"
+    cleaned = re.sub(noise_words, " ", cleaned)
+    cleaned = re.sub(r"(?:^|\s)\d+(?:\.\d+)?\s*(?:元|份)?(?:\s|$)", " ", cleaned)
+    cleaned = re.sub(r"[,，.。：:\-]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    parts = [part for part in cleaned.split(" ") if part and len(part) >= 2]
+    for part in parts:
+        if any("\u4e00" <= ch <= "\u9fff" for ch in part):
+            return part
     return parts[0] if parts else ""
 
 
@@ -382,17 +496,81 @@ def open_lots(session: Session, fund_code: str) -> list[tuple[float, date]]:
     return lots
 
 
+def apply_trade_calculation(
+    session: Session,
+    fund_code: str,
+    action: TransactionAction,
+    amount_cny: float | None,
+    share: float | None,
+    nav: float | None,
+    trade_date: date,
+    submitted_at: time | None = None,
+) -> tuple[float | None, float | None, float | None, date | None, date]:
+    if fund_code == "000000":
+        return amount_cny, share, None, None, trade_date
+    rule = get_fund_rule(session, fund_code)
+    money = is_money_fund(session, fund_code)
+    effective_nav_item = find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
+    effective_trade_date = effective_nav_item.nav_date if effective_nav_item else trade_date
+    nav_value = effective_nav_item.unit_nav if effective_nav_item else nav
+    if money and nav_value is None:
+        nav_value = 1.0
+    if nav_value is None:
+        return amount_cny, share, None, None, trade_date
+    nav_date = effective_trade_date
+    confirm_date = find_nth_nav_date(
+        session,
+        fund_code,
+        effective_trade_date,
+        rule.buy_confirm_days if action == TransactionAction.buy else rule.sell_confirm_days,
+    )
+    fee = None
+    if action == TransactionAction.buy:
+        effective_amount = amount_cny
+        if effective_amount and effective_amount > 0:
+            buy_fee_rate = 0.0 if money else rule.buy_fee_rate
+            fee = round(effective_amount * buy_fee_rate, 2)
+            if not share:
+                share = round((effective_amount - fee) / nav_value, 2)
+        elif share and share > 0:
+            amount_cny = round(share * nav_value, 2)
+            buy_fee_rate = 0.0 if money else rule.buy_fee_rate
+            fee = round(amount_cny * buy_fee_rate, 2)
+    elif action == TransactionAction.sell:
+        effective_share = share
+        if effective_share and effective_share > 0:
+            fee = 0.0 if money else infer_redemption_fee(session, fund_code, effective_share, nav_value, nav_date)
+            if not amount_cny:
+                amount_cny = round(effective_share * nav_value - (fee or 0), 2)
+        elif amount_cny and amount_cny > 0:
+            share = round(amount_cny / nav_value, 2)
+            fee = 0.0 if money else infer_redemption_fee(session, fund_code, share, nav_value, nav_date)
+    elif action in {TransactionAction.dividend, TransactionAction.dividend_reinvest}:
+        fee = 0.0
+    return amount_cny, share, fee, confirm_date, effective_trade_date
+
+
 def create_candidates_from_rows(
     session: Session,
     rows: list[dict[str, Any]],
     source_file: str | None = None,
     source_hash: str | None = None,
-) -> int:
+) -> tuple[int, list[str]]:
     created = 0
+    warnings: list[str] = []
+    llm_cache: dict[str, str] = {}
+    known_names = known_fund_names(session)
     for row in rows:
         trade_date = parse_date_value(row.get("trade_date"))
         fund_code = str(row.get("fund_code") or "").strip().zfill(6)
         if not trade_date or not fund_code.isdigit() or len(fund_code) != 6:
+            continue
+        fund_name = str(row.get("fund_name") or "")
+        if fund_code == "000000" and fund_name:
+            resolved = _resolve_fund_code(session, fund_name, known_names, llm_cache, warnings)
+            if resolved:
+                fund_code = resolved
+        if is_etf_fund(session, fund_code):
             continue
         try:
             action = TransactionAction(str(row.get("action") or TransactionAction.buy.value))
@@ -402,27 +580,30 @@ def create_candidates_from_rows(
             row.get("submitted_at") or row.get("submitted_time") or row.get("trade_time")
         )
         rule = get_fund_rule(session, fund_code)
-        effective_nav = find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
-        effective_trade_date = effective_nav.nav_date if effective_nav else trade_date
-        confirm_date = parse_date_value(row.get("confirm_date"))
-        if confirm_date is None and effective_nav:
-            confirm_date = find_nth_nav_date(
-                session,
-                fund_code,
-                effective_nav.nav_date,
-                rule.buy_confirm_days if action == TransactionAction.buy else rule.sell_confirm_days,
-            )
+        effective_nav_item = find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
+        effective_nav_value = effective_nav_item.unit_nav if effective_nav_item else None
+        nav = parse_float_value(row.get("nav")) or effective_nav_value
+        amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
+            session,
+            fund_code,
+            action,
+            parse_float_value(row.get("amount_cny")),
+            parse_float_value(row.get("share")),
+            nav,
+            trade_date,
+            submitted_at=submitted_at,
+        )
         candidate = FundTransactionCandidate(
             fund_code=fund_code,
             fund_name=str(row.get("fund_name") or ""),
             trade_date=effective_trade_date,
             submitted_at=submitted_at,
-            confirm_date=confirm_date,
+            confirm_date=parse_date_value(row.get("confirm_date")) or confirm_date,
             action=action,
-            amount_cny=parse_float_value(row.get("amount_cny")),
-            share=parse_float_value(row.get("share")),
-            nav=parse_float_value(row.get("nav")) or (effective_nav.unit_nav if effective_nav else None),
-            fee=parse_float_value(row.get("fee")),
+            amount_cny=amount_cny,
+            share=share,
+            nav=nav,
+            fee=fee,
             source_file=source_file,
             source_hash=source_hash,
             raw_text=str(row),
@@ -430,7 +611,7 @@ def create_candidates_from_rows(
         )
         session.add(candidate)
         created += 1
-    return created
+    return created, warnings
 
 
 def parse_date_value(value: Any) -> date | None:
@@ -550,22 +731,27 @@ def process_auto_import_job(payload: dict[str, Any]) -> str:
             else:
                 if llm_result and llm_result.parsed_json:
                     document.ocr_text = llm_result.raw_response
-                    parsed_count = create_candidates_from_rows(
+                    parsed_count, parse_warnings = create_candidates_from_rows(
                         session,
                         llm_result.parsed_json,
                         source_file=document.source_file,
                         source_hash=document.source_hash,
                     )
                     messages.append("DeepSeek 解析")
+                    if parse_warnings:
+                        messages.extend(parse_warnings)
 
         if parsed_count == 0:
-            parsed_count = create_candidates_from_text(
+            parsed_count, parse_warnings = create_candidates_from_text(
                 session,
                 text,
                 source_file=document.source_file,
                 source_hash=document.source_hash,
+                config=config,
             )
             messages.append("规则解析")
+            if parse_warnings:
+                messages.extend(parse_warnings)
 
         document.status = ImportStatus.parse_done
         document.updated_at = datetime.utcnow()
@@ -597,30 +783,36 @@ def process_parse_job(payload: dict[str, Any]) -> str:
             raise RuntimeError("没有可解析文本")
 
         parsed_count = 0
+        parse_warnings: list[str] = []
         config = runtime_settings(session)
         if use_llm and is_deepseek_configured(config):
             llm_result = parse_with_deepseek(text, config)
             if llm_result and llm_result.parsed_json:
                 document.ocr_text = llm_result.raw_response
-                parsed_count = create_candidates_from_rows(
+                parsed_count, parse_warnings = create_candidates_from_rows(
                     session,
                     llm_result.parsed_json,
                     source_file=document.source_file,
                     source_hash=document.source_hash,
                 )
         if parsed_count == 0:
-            parsed_count = create_candidates_from_text(
+            parsed_count, parse_warnings2 = create_candidates_from_text(
                 session,
                 text,
                 source_file=document.source_file,
                 source_hash=document.source_hash,
+                config=config,
             )
+            parse_warnings.extend(parse_warnings2)
         document.status = ImportStatus.parse_done
         document.error_message = ""
         document.updated_at = datetime.utcnow()
         session.add(document)
         session.commit()
-        return f"已生成 {parsed_count} 条候选交易"
+        msg = f"已生成 {parsed_count} 条候选交易"
+        if parse_warnings:
+            msg += "。" + "；".join(parse_warnings)
+        return msg
 
 
 def fund_codes_for_source(session: Session, source_hash: str | None) -> set[str]:
@@ -654,6 +846,7 @@ def sync_related_market_data(session: Session, fund_codes: set[str]) -> list[str
                     rule.buy_fee_rate = synced.buy_fee_rate
                 rule.sync_source = synced.source
                 rule.synced_at = sync_timestamp()
+                rule.fund_type = synced.fund_type or rule.fund_type
                 rule.updated_at = datetime.utcnow()
                 session.add(rule)
                 if synced.fee_tiers:
@@ -716,6 +909,7 @@ def process_fund_rule_sync_job(payload: dict[str, Any]) -> str:
             rule.buy_fee_rate = synced.buy_fee_rate
         rule.sync_source = synced.source
         rule.synced_at = sync_timestamp()
+        rule.fund_type = synced.fund_type or rule.fund_type
         note_parts = [part for part in [rule.notes, synced.raw_notes] if part]
         rule.notes = "\n".join(dict.fromkeys(note_parts))
         rule.updated_at = datetime.utcnow()
@@ -1397,12 +1591,23 @@ def candidate_update(
     candidate.fund_name = fund_name
     candidate.trade_date = trade_date
     candidate.submitted_at = submitted_at
-    candidate.confirm_date = confirm_date
     candidate.action = action
-    candidate.amount_cny = amount_cny
-    candidate.share = share
+    calc_amount, calc_share, calc_fee, calc_confirm, calc_trade_date = apply_trade_calculation(
+        session,
+        fund_code.zfill(6),
+        action,
+        amount_cny,
+        share,
+        nav,
+        trade_date,
+        submitted_at=submitted_at,
+    )
+    candidate.amount_cny = amount_cny if amount_cny is not None else calc_amount
+    candidate.share = share if share is not None else calc_share
     candidate.nav = nav
-    candidate.fee = fee
+    candidate.fee = fee if fee is not None else calc_fee
+    candidate.confirm_date = confirm_date or calc_confirm
+    candidate.trade_date = calc_trade_date
     candidate.updated_at = datetime.utcnow()
     session.add(candidate)
     session.commit()
@@ -1420,6 +1625,21 @@ def candidate_confirm(
         raise HTTPException(status_code=404)
     if candidate.status == CandidateStatus.confirmed:
         return redirect("/candidates")
+
+    fee = candidate.fee
+    if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
+        money = is_money_fund(session, candidate.fund_code)
+        if money:
+            fee = 0.0
+        else:
+            fee = infer_redemption_fee(
+                session,
+                candidate.fund_code,
+                candidate.share,
+                candidate.nav,
+                candidate.trade_date,
+            )
+
     tx = FundTransaction(
         candidate_id=candidate.id,
         fund_code=candidate.fund_code,
@@ -1431,7 +1651,7 @@ def candidate_confirm(
         amount_cny=candidate.amount_cny,
         share=candidate.share,
         nav=candidate.nav,
-        fee=candidate.fee,
+        fee=fee,
         source_file=candidate.source_file,
         raw_text=candidate.raw_text,
     )
@@ -1461,6 +1681,87 @@ def candidate_ignore(
         session.add(candidate)
         session.commit()
     return redirect("/candidates")
+
+
+@app.post("/candidates/confirm-all")
+def candidates_confirm_all(
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    candidates = session.exec(
+        select(FundTransactionCandidate).where(
+            FundTransactionCandidate.status == CandidateStatus.pending,
+            FundTransactionCandidate.fund_code != "000000",
+        )
+    ).all()
+    confirmed = 0
+    for candidate in candidates:
+        if session.exec(
+            select(FundTransaction).where(FundTransaction.candidate_id == candidate.id)
+        ).first():
+            candidate.status = CandidateStatus.confirmed
+            candidate.updated_at = datetime.utcnow()
+            session.add(candidate)
+            continue
+        fee = candidate.fee
+        if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
+            money = is_money_fund(session, candidate.fund_code)
+            fee = 0.0 if money else infer_redemption_fee(
+                session, candidate.fund_code, candidate.share, candidate.nav, candidate.trade_date,
+            )
+        tx = FundTransaction(
+            candidate_id=candidate.id,
+            fund_code=candidate.fund_code,
+            fund_name=candidate.fund_name,
+            trade_date=candidate.trade_date,
+            submitted_at=candidate.submitted_at,
+            confirm_date=candidate.confirm_date,
+            action=candidate.action,
+            amount_cny=candidate.amount_cny,
+            share=candidate.share,
+            nav=candidate.nav,
+            fee=fee,
+            source_file=candidate.source_file,
+            raw_text=candidate.raw_text,
+        )
+        session.add(tx)
+        session.flush()
+        candidate.status = CandidateStatus.confirmed
+        candidate.confirmed_transaction_id = tx.id
+        candidate.updated_at = datetime.utcnow()
+        session.add(candidate)
+        confirmed += 1
+    session.commit()
+    skipped = len(candidates) - confirmed
+    msg = f"已确认 {confirmed} 条"
+    if skipped:
+        msg += f"，跳过 {skipped} 条（重复）"
+    return redirect(f"/candidates?message={msg}")
+
+
+@app.post("/candidates/{candidate_id}/suggest-code")
+def candidate_suggest_code(
+    candidate_id: int,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    candidate = session.get(FundTransactionCandidate, candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404)
+    if not candidate.fund_name or (candidate.fund_code and candidate.fund_code != "000000"):
+        return redirect("/candidates")
+    result = search_fund_by_name(candidate.fund_name)
+    if result:
+        code = result["fund_code"]
+        candidate.fund_code = code
+        candidate.confidence = max(candidate.confidence, 0.6)
+        candidate.updated_at = datetime.utcnow()
+        session.add(candidate)
+        session.commit()
+        message = f"名称匹配 {candidate.fund_name} → {code}"
+    else:
+        message = "无法匹配基金代码，请手动填写"
+    return redirect(f"/candidates?message={message}")
 
 
 @app.get("/transactions", response_class=HTMLResponse)

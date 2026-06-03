@@ -3,6 +3,7 @@ import base64
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Lock
 
 import requests
 
@@ -15,6 +16,7 @@ class OcrResult:
 
 _ENGINE = None
 _BACKEND = None
+_ENGINE_LOCK = Lock()
 
 
 def recognize_file(path: str | Path, config: dict[str, str] | None = None) -> OcrResult:
@@ -36,13 +38,16 @@ def recognize_file(path: str | Path, config: dict[str, str] | None = None) -> Oc
 def _get_engine(config: dict[str, str] | None = None):
     global _BACKEND, _ENGINE
     backend = _config_value(config, "OCR_BACKEND", "rapidocr").lower()
-    if _ENGINE is None or _BACKEND != backend:
+    if _ENGINE is not None and _BACKEND == backend:
+        return _BACKEND, _ENGINE
+    with _ENGINE_LOCK:
+        if _ENGINE is not None and _BACKEND == backend:
+            return _BACKEND, _ENGINE
         if backend == "paddle":
             _ENGINE = _get_paddle_engine()
             _BACKEND = "paddle"
         else:
             from rapidocr_onnxruntime import RapidOCR
-
             _ENGINE = RapidOCR()
             _BACKEND = "rapidocr"
     return _BACKEND, _ENGINE

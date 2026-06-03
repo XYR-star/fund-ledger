@@ -52,7 +52,7 @@ def extract_candidates(raw_text: str) -> list[ExtractedCandidate]:
         except ValueError:
             continue
         fund_code = parts[1].zfill(6)
-        if not re.fullmatch(r"\d{6}", fund_code):
+        if not re.fullmatch(r"\d{6}", fund_code) or fund_code == "000000":
             continue
         fund_name = "" if parts[2] == "-" else parts[2]
         action = _parse_action(parts[3])

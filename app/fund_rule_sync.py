@@ -10,6 +10,7 @@ from typing import Any
 class SyncedRule:
     fund_code: str
     fund_name: str = ""
+    fund_type: str = ""
     buy_confirm_days: int | None = None
     sell_confirm_days: int | None = None
     cutoff_time: str = "15:00"
@@ -32,6 +33,7 @@ def fetch_fund_rule_from_akshare(fund_code: str) -> SyncedRule:
     try:
         overview = call_with_timeout(ak.fund_overview_em, symbol=code)
         result.fund_name = _first_value(overview, ("基金简称", "基金全称")) or ""
+        result.fund_type = _first_value(overview, ("基金类型",)) or ""
     except Exception as exc:
         notes.append(f"overview failed: {exc}")
 
@@ -272,3 +274,70 @@ def _dedupe_tiers(tiers: list[tuple[int, int | None, float]]) -> list[tuple[int,
 
 def sync_timestamp() -> datetime:
     return datetime.utcnow()
+
+
+_fund_list_cache: Any = None
+_fund_list_failed: bool = False
+
+
+def search_fund_by_name(fund_name: str) -> dict[str, str] | None:
+    global _fund_list_cache, _fund_list_failed
+    if _fund_list_failed:
+        return None
+    try:
+        if _fund_list_cache is None:
+            import akshare as ak
+            _fund_list_cache = ak.fund_name_em()
+    except Exception:
+        _fund_list_failed = True
+        return None
+    df = _fund_list_cache
+    clean = fund_name.replace("（", "(").replace("）", ")").strip()
+    hw = clean.replace("(", "（").replace(")", "）").strip()
+    for variant in {fund_name.strip(), clean, hw}:
+        if not variant:
+            continue
+        if variant in df["基金简称"].values:
+            row = df[df["基金简称"] == variant].iloc[0]
+            return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
+    for search in [clean, hw, fund_name.strip()]:
+        if not search:
+            continue
+        matches = df[df["基金简称"].str.contains(search, na=False, regex=False)]
+        if len(matches) == 1:
+            row = matches.iloc[0]
+            return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
+        if len(matches) > 1:
+            short = matches[matches["基金简称"].str.len() == matches["基金简称"].str.len().min()]
+            if len(short) >= 1:
+                row = short.iloc[0]
+                return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
+    for search in [clean, hw]:
+        if not search:
+            continue
+        tokens = re.split(r"[()（）\s\-]+", search)
+        if len(tokens) > 1:
+            for i in range(len(tokens)):
+                shorter = "".join(tokens[:i] + tokens[i + 1:])
+                if len(shorter) < 3:
+                    continue
+                matches = df[df["基金简称"].str.contains(shorter, na=False, regex=False)]
+                if len(matches) == 1:
+                    row = matches.iloc[0]
+                    return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
+    for search in [clean, hw]:
+        base = re.sub(r"[\s]*[（(][^）)]*[）)]", "", search)
+        for noise in ["中国", "指数", "混合", "债券", "发起式", "ETF"]:
+            shorter = base.replace(noise, "")
+            if len(shorter) < 4:
+                continue
+            matches = df[df["基金简称"].str.contains(shorter, na=False, regex=False)]
+            if len(matches) == 1:
+                row = matches.iloc[0]
+                return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
+            if len(matches) > 1:
+                short = matches[matches["基金简称"].str.len() == matches["基金简称"].str.len().min()]
+                if len(short) >= 1:
+                    row = short.iloc[0]
+                    return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
+    return None
