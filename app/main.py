@@ -639,8 +639,15 @@ def apply_trade_calculation(
         elif amount_cny and amount_cny > 0:
             share = round(amount_cny / nav_value, 2)
             fee = 0.0 if money else infer_redemption_fee(session, fund_code, share, nav_value, nav_date)
-    elif action in {TransactionAction.dividend, TransactionAction.dividend_reinvest}:
+    elif action == TransactionAction.dividend:
         fee = 0.0
+        share = None
+    elif action == TransactionAction.dividend_reinvest:
+        fee = 0.0
+        if amount_cny and amount_cny > 0 and not share:
+            share = round(amount_cny / nav_value, 2)
+        elif share and share > 0 and not amount_cny:
+            amount_cny = round(share * nav_value, 2)
     return amount_cny, share, fee, confirm_date, effective_trade_date
 
 

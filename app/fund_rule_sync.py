@@ -1,9 +1,11 @@
+import ast
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from multiprocessing import Process, Queue
 from queue import Empty
 from typing import Any
+from urllib.parse import quote
 
 
 @dataclass
@@ -283,14 +285,14 @@ _fund_list_failed: bool = False
 def search_fund_by_name(fund_name: str) -> dict[str, str] | None:
     global _fund_list_cache, _fund_list_failed
     if _fund_list_failed:
-        return None
+        return search_fund_by_name_sina(fund_name) or search_fund_by_name_eastmoney(fund_name)
     try:
         if _fund_list_cache is None:
             import akshare as ak
             _fund_list_cache = ak.fund_name_em()
     except Exception:
         _fund_list_failed = True
-        return None
+        return search_fund_by_name_sina(fund_name) or search_fund_by_name_eastmoney(fund_name)
     df = _fund_list_cache
     clean = fund_name.replace("（", "(").replace("）", ")").strip()
     hw = clean.replace("(", "（").replace(")", "）").strip()
@@ -340,4 +342,176 @@ def search_fund_by_name(fund_name: str) -> dict[str, str] | None:
                 if len(short) >= 1:
                     row = short.iloc[0]
                     return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
+    fallback = _search_rows_by_core(fund_name, _rows(df))
+    if fallback:
+        return fallback
+    sina = search_fund_by_name_sina(fund_name)
+    if sina:
+        return sina
+    eastmoney = search_fund_by_name_eastmoney(fund_name)
+    if eastmoney:
+        return eastmoney
     return None
+
+
+def search_fund_by_name_sina(fund_name: str) -> dict[str, str] | None:
+    try:
+        import requests
+
+        url = f"https://suggest3.sinajs.cn/suggest/type=&key={quote(fund_name)}"
+        response = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        response.encoding = "gbk"
+        match = re.search(r'var\s+suggestvalue\s*=\s*"(.*)"\s*;', response.text, re.S)
+        if not match:
+            return None
+        rows = []
+        seen = set()
+        for item in match.group(1).split(";"):
+            parts = item.split(",")
+            if len(parts) < 7:
+                continue
+            code = parts[2].strip()
+            name = (parts[4] or parts[6]).strip()
+            if not re.fullmatch(r"\d{6}", code) or not name:
+                continue
+            key = (code, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({"基金代码": code, "基金简称": name, "基金类型": "场外基金"})
+        return _search_rows_by_core(fund_name, rows)
+    except Exception:
+        return None
+
+
+def search_fund_by_name_eastmoney(fund_name: str) -> dict[str, str] | None:
+    try:
+        import requests
+
+        response = requests.get("https://fund.eastmoney.com/js/fundcode_search.js", timeout=30)
+        response.raise_for_status()
+        match = re.search(r"var\s+r\s*=\s*(\[.*\]);?", response.text, re.S)
+        if not match:
+            return None
+        rows = []
+        for item in ast.literal_eval(match.group(1)):
+            if len(item) < 4:
+                continue
+            rows.append({"基金代码": item[0], "基金简称": item[2], "基金类型": item[3]})
+        return _search_rows_by_core(fund_name, rows)
+    except Exception:
+        return None
+
+
+def _search_rows_by_core(fund_name: str, rows: list[dict[str, Any]]) -> dict[str, str] | None:
+    scored = []
+    query_manager = _fund_manager(fund_name)
+    query_core = _fund_name_core(fund_name)
+    query_constraints = _fund_name_constraints(fund_name)
+    if len(query_core) < 8:
+        return None
+    for row in rows:
+        row_name = str(row.get("基金简称") or "")
+        if query_manager and _fund_manager(row_name) != query_manager:
+            continue
+        if not _constraints_match(query_constraints, row_name):
+            continue
+        row_core = _fund_name_core(row_name)
+        if len(row_core) < 8:
+            continue
+        if query_core == row_core:
+            return {
+                "fund_code": str(row["基金代码"]).zfill(6),
+                "fund_name": str(row["基金简称"]),
+                "fund_type": str(row["基金类型"]),
+            }
+        score = _substring_score(query_core, row_core)
+        if score >= 0.78:
+            scored.append((score, len(row_core), row))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    best = scored[0]
+    if len(scored) > 1 and best[0] - scored[1][0] < 0.08:
+        return None
+    row = best[2]
+    return {
+        "fund_code": str(row["基金代码"]).zfill(6),
+        "fund_name": str(row["基金简称"]),
+        "fund_type": str(row["基金类型"]),
+    }
+
+
+def _fund_manager(value: str) -> str | None:
+    text = value.replace("（", "(").replace("）", ")").upper()
+    managers = [
+        "易方达",
+        "华泰柏瑞",
+        "鹏华",
+        "嘉实",
+        "华宝",
+        "鑫元",
+        "招商",
+        "富国",
+        "广发",
+        "南方",
+        "华夏",
+        "汇添富",
+        "博时",
+        "国泰",
+        "天弘",
+    ]
+    for manager in managers:
+        if text.startswith(manager.upper()):
+            return manager
+    return None
+
+
+def _fund_name_core(value: str) -> str:
+    text = value.replace("（", "(").replace("）", ")").upper()
+    text = re.sub(r"[\s()（）\-]+", "", text)
+    manager = _fund_manager(value)
+    if manager:
+        text = text[len(manager):]
+    replacements = {
+        "高股息": "红利",
+        "低波动": "低波",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    for noise in ("基金", "指数型", "混合型", "发起式"):
+        text = text.replace(noise, "")
+    return text
+
+
+def _fund_name_constraints(value: str) -> dict[str, bool]:
+    text = value.replace("（", "(").replace("）", ")").upper()
+    return {
+        "港股通": "港股通" in text,
+    }
+
+
+def _constraints_match(constraints: dict[str, bool], row_name: str) -> bool:
+    row_text = row_name.replace("（", "(").replace("）", ")").upper()
+    for keyword, required in constraints.items():
+        if required and keyword.upper() not in row_text:
+            return False
+    return True
+
+
+def _substring_score(left: str, right: str) -> float:
+    if left == right:
+        return 1.0
+    if left in right or right in left:
+        return min(len(left), len(right)) / max(len(left), len(right))
+    previous = [0] * (len(right) + 1)
+    for left_char in left:
+        current = [0]
+        for index, right_char in enumerate(right, start=1):
+            if left_char == right_char:
+                current.append(previous[index - 1] + 1)
+            else:
+                current.append(max(previous[index], current[-1]))
+        previous = current
+    return previous[-1] / max(len(left), len(right))

@@ -765,8 +765,10 @@ async def test_sell_fee_uses_fifo_fee_tiers(client):
     assert "3.0" in page.text
 
 
-async def test_rule_parser_handles_confirm_and_fee_text():
-    from app.fund_rule_sync import parse_confirm_days, parse_redemption_fee_tiers
+async def test_rule_parser_handles_confirm_and_fee_text(monkeypatch):
+    import pandas as pd
+    import app.fund_rule_sync as sync
+    from app.fund_rule_sync import parse_confirm_days, parse_redemption_fee_tiers, search_fund_by_name
 
     confirm_df = [
         {"费用类型": "交易确认日", "条件或名称": "买入确认 T+1"},
@@ -782,6 +784,138 @@ async def test_rule_parser_handles_confirm_and_fee_text():
         ]
     )
     assert tiers == [(0, 7, 0.015), (7, 365, 0.005), (365, None, 0.0)]
+    monkeypatch.setattr(
+        sync,
+        "_fund_list_cache",
+        pd.DataFrame(
+            [
+                {
+                    "基金代码": "025937",
+                    "基金简称": "华泰柏瑞恒生港股通高股息低波动ETF发起式联接A",
+                    "基金类型": "指数型-股票",
+                },
+                {
+                    "基金代码": "025938",
+                    "基金简称": "华泰柏瑞恒生港股通高股息低波动ETF发起式联接C",
+                    "基金类型": "指数型-股票",
+                },
+            ]
+        ),
+    )
+    monkeypatch.setattr(sync, "_fund_list_failed", False)
+    monkeypatch.setattr(sync, "search_fund_by_name_sina", lambda _: None)
+    monkeypatch.setattr(sync, "search_fund_by_name_eastmoney", lambda _: None)
+    result = search_fund_by_name("易方达恒生港股通高股息低波动ETF联接发起式A")
+    assert result is None
+    result = search_fund_by_name("华泰柏瑞恒生港股通高股息低波动ETF联接发起式A")
+    assert result["fund_code"] == "025937"
+
+
+async def test_fund_name_search_uses_full_sina_suggestion(monkeypatch):
+    import app.fund_rule_sync as sync
+    from app.fund_rule_sync import search_fund_by_name_sina
+
+    class FakeResponse:
+        encoding = "utf-8"
+        text = (
+            'var suggestvalue="易方达恒生港股通高股息低波动ETF联接发起式A,201,021457,'
+            "of021457,易方达恒生港股通高股息低波动ETF联接发起式A,,"
+            "易方达恒生港股通高股息低波动ETF联接发起式A,99,1,,,;"
+            "易方达恒生港股通高股息低波动ETF联接发起式C,201,021458,"
+            "of021458,易方达恒生港股通高股息低波动ETF联接发起式C,,"
+            '易方达恒生港股通高股息低波动ETF联接发起式C,99,1,,,";'
+        )
+
+        def raise_for_status(self):
+            return None
+
+    class FakeRequests:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setitem(__import__("sys").modules, "requests", FakeRequests)
+    result = search_fund_by_name_sina("易方达恒生港股通高股息低波动ETF联接发起式A")
+    assert result == {
+        "fund_code": "021457",
+        "fund_name": "易方达恒生港股通高股息低波动ETF联接发起式A",
+        "fund_type": "场外基金",
+    }
+
+
+async def test_dividend_and_reinvest_calculation(client):
+    import app.db
+    from app.main import create_candidates_from_rows
+    from app.models import FundNav, FundTransaction, FundTransactionCandidate, TransactionAction
+    from app.portfolio import calculate_position_summaries
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.0))
+        create_candidates_from_rows(
+            session,
+            [
+                {
+                    "fund_code": "161725",
+                    "fund_name": "招商中证白酒",
+                    "trade_date": "2024-01-02",
+                    "action": "dividend_reinvest",
+                    "amount_cny": 20,
+                },
+                {
+                    "fund_code": "161725",
+                    "fund_name": "招商中证白酒",
+                    "trade_date": "2024-01-02",
+                    "action": "dividend",
+                    "amount_cny": 5,
+                    "share": 99,
+                },
+            ],
+        )
+        session.commit()
+        candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
+        assert (candidates[0].amount_cny, candidates[0].share, candidates[0].fee) == (20, 10, 0.0)
+        assert (candidates[1].amount_cny, candidates[1].share, candidates[1].fee) == (5, None, 0.0)
+        session.add(
+            FundTransaction(
+                fund_code="161725",
+                fund_name="招商中证白酒",
+                trade_date=date(2024, 1, 1),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=50,
+                nav=2.0,
+                fee=0,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="161725",
+                fund_name="招商中证白酒",
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.dividend,
+                amount_cny=5,
+                fee=0,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="161725",
+                fund_name="招商中证白酒",
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.dividend_reinvest,
+                amount_cny=20,
+                share=10,
+                nav=2.0,
+                fee=0,
+            )
+        )
+        session.commit()
+        position = calculate_position_summaries(session)[0]
+    assert position.share == 60
+    assert position.cost == 95
+    assert position.realized_profit == 5
 
 
 async def test_fund_rule_auto_sync_creates_rule_and_tiers(client, monkeypatch):
