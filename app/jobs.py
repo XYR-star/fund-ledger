@@ -35,6 +35,7 @@ def create_and_enqueue(session: Session, job_type: str, payload: dict[str, Any])
 
 
 def recover_interrupted_jobs() -> None:
+    queued_ids = []
     with Session(_engine()) as session:
         jobs = session.exec(select(BackgroundJob).where(BackgroundJob.status == JobStatus.running)).all()
         for job in jobs:
@@ -42,7 +43,14 @@ def recover_interrupted_jobs() -> None:
             job.error_message = "任务在服务重启或进程退出时中断"
             job.finished_at = datetime.utcnow()
             session.add(job)
+        queued_ids = [
+            job.id
+            for job in session.exec(select(BackgroundJob).where(BackgroundJob.status == JobStatus.queued)).all()
+            if job.id is not None
+        ]
         session.commit()
+    for job_id in queued_ids:
+        enqueue_job(job_id)
 
 
 def recent_jobs(session: Session, limit: int = 10) -> list[BackgroundJob]:

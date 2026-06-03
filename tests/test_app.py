@@ -402,6 +402,80 @@ async def test_batch_upload_auto_imports_multiple_files(client, monkeypatch):
     assert "005827" in page.text
 
 
+async def test_auto_import_similarity_message_does_not_crash(client, tmp_path, monkeypatch):
+    import app.db
+    import app.main
+    from app.models import ImportDocument, ImportStatus
+    from app.ocr import OcrResult
+
+    repeated_text = "2024-01-02 161725 招商中证白酒 buy 1000 500 2.0000 0"
+    upload_path = tmp_path / "new.png"
+    upload_path.write_bytes(b"fake image")
+    monkeypatch.setattr(app.main, "recognize_file", lambda *_: OcrResult(text=repeated_text, confidence=0.99))
+    with Session(app.db.engine) as session:
+        old_doc = ImportDocument(
+            file_name="old.png",
+            ocr_text=repeated_text,
+            source_hash="old",
+            status=ImportStatus.parse_done,
+        )
+        new_doc = ImportDocument(
+            file_name="new.png",
+            source_file=str(upload_path),
+            source_hash="new",
+            status=ImportStatus.uploaded,
+        )
+        session.add(old_doc)
+        session.add(new_doc)
+        session.commit()
+        session.refresh(old_doc)
+        session.refresh(new_doc)
+        old_id = old_doc.id
+        new_id = new_doc.id
+
+    message = app.main.process_auto_import_job({"document_id": new_id})
+    assert f"发现相似文档 #{old_id}" in message
+    with Session(app.db.engine) as session:
+        updated = session.get(ImportDocument, new_id)
+        assert f"导入 #{old_id}" in updated.error_message
+
+
+async def test_queued_jobs_are_reenqueued_on_recovery(client):
+    import app.db
+    from app.jobs import recover_interrupted_jobs, register_job
+    from app.models import BackgroundJob, JobStatus
+
+    register_job("resume_test", lambda payload: "resumed")
+    with Session(app.db.engine) as session:
+        job = BackgroundJob(job_type="resume_test", payload_json="{}")
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        job_id = job.id
+
+    for _ in range(20):
+        with Session(app.db.engine) as session:
+            current = session.get(BackgroundJob, job_id)
+            if current.status == JobStatus.done:
+                break
+        await asyncio.sleep(0.05)
+    with Session(app.db.engine) as session:
+        current = session.get(BackgroundJob, job_id)
+        assert current.status == JobStatus.queued
+
+    recover_interrupted_jobs()
+    for _ in range(20):
+        with Session(app.db.engine) as session:
+            current = session.get(BackgroundJob, job_id)
+            if current.status == JobStatus.done:
+                break
+        await asyncio.sleep(0.05)
+    with Session(app.db.engine) as session:
+        current = session.get(BackgroundJob, job_id)
+        assert current.status == JobStatus.done
+        assert current.result_message == "resumed"
+
+
 async def test_settings_page_saves_runtime_config(client):
     await login(client)
     response = await client.post(
@@ -973,6 +1047,47 @@ async def test_fund_rule_sync_failure_keeps_existing_rule(client, monkeypatch):
     page = await client.get("/fund-rules")
     assert "人工规则" in page.text
     assert "买入 T+2" in page.text
+
+
+async def test_fix_unmatched_keeps_candidate_update_when_rule_sync_fails(client, monkeypatch):
+    import app.db
+    import app.main
+    from app.models import CandidateStatus, FundTransactionCandidate, TransactionAction
+
+    await login(client)
+    monkeypatch.setattr(
+        app.main,
+        "fetch_fund_rule_from_akshare",
+        lambda code: (_ for _ in ()).throw(RuntimeError("source down")),
+    )
+    monkeypatch.setattr(app.main, "sync_nav_for_fund", lambda *_: (0, None))
+    with Session(app.db.engine) as session:
+        candidate = FundTransactionCandidate(
+            status=CandidateStatus.pending,
+            fund_code="000000",
+            fund_name="待修正基金",
+            trade_date=date(2024, 1, 2),
+            action=TransactionAction.buy,
+            amount_cny=100,
+        )
+        session.add(candidate)
+        session.commit()
+        session.refresh(candidate)
+        candidate_id = candidate.id
+
+    response = await client.post(
+        "/candidates/fix-unmatched",
+        data={"fund_name": "待修正基金", "fund_code": "161725"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    from urllib.parse import unquote
+
+    assert "规则同步失败" in unquote(response.headers["location"])
+    with Session(app.db.engine) as session:
+        candidate = session.get(FundTransactionCandidate, candidate_id)
+        assert candidate.fund_code == "161725"
+        assert candidate.confidence == 0.8
 
 
 async def test_failed_minimal_order_is_ignored(client):

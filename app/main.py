@@ -7,6 +7,7 @@ from typing import Any, Optional
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 from sqlmodel import Session, desc, select
 from starlette.status import HTTP_303_SEE_OTHER
 
@@ -859,7 +860,7 @@ def process_auto_import_job(payload: dict[str, Any]) -> str:
                 document.updated_at = datetime.utcnow()
                 session.add(document)
                 session.commit()
-                messages.append(f"发现相似文档 #{similar.id}")
+                messages.append(f"发现相似文档 #{other_doc.id}")
 
         text = document.ocr_text or document.raw_text
         if not text.strip():
@@ -1959,14 +1960,10 @@ def candidates_fix_unmatched(
             FundTransactionCandidate.status == CandidateStatus.pending,
         )
     ).all()
-    fixed = 0
-    for c in candidates:
-        c.fund_code = code
-        c.confidence = 0.8
-        c.updated_at = datetime.utcnow()
-        session.add(c)
-        fixed += 1
-    if fixed:
+    if candidates:
+        _apply_unmatched_code_fix(session, candidates, fund_name, code)
+        fixed = len(candidates)
+        messages = [f"已将 {fixed} 条「{fund_name}」的代码修正为 {code}"]
         try:
             synced = fetch_fund_rule_from_akshare(code)
             rule = session.get(FundRule, code) or FundRule(fund_code=code)
@@ -1982,20 +1979,41 @@ def candidates_fix_unmatched(
             rule.synced_at = sync_timestamp()
             rule.updated_at = datetime.utcnow()
             session.add(rule)
-            # 也更新已确认流水
-            session.exec(
+            session.execute(
                 text("UPDATE fundtransaction SET fund_code = :code WHERE fund_code = '000000' AND fund_name = :name"),
                 {"code": code, "name": fund_name},
             )
+            session.commit()
         except Exception as exc:
-            pass
-        session.commit()
+            session.rollback()
+            _apply_unmatched_code_fix(session, candidates, fund_name, code)
+            messages.append(f"规则同步失败：{exc}")
         try:
-            sync_nav_for_fund(session, code)
-        except Exception:
-            pass
-        return redirect(f"/candidates?message=已将 {fixed} 条「{fund_name}」的代码修正为 {code}")
+            _, error = sync_nav_for_fund(session, code)
+            if error:
+                messages.append(f"净值同步失败：{error}")
+        except Exception as exc:
+            messages.append(f"净值同步失败：{exc}")
+        return redirect(f"/candidates?message={'；'.join(messages)}")
     return redirect("/candidates?message=未找到需要修正的候选")
+
+
+def _apply_unmatched_code_fix(
+    session: Session,
+    candidates: list[FundTransactionCandidate],
+    fund_name: str,
+    code: str,
+) -> None:
+    for candidate in candidates:
+        candidate.fund_code = code
+        candidate.confidence = 0.8
+        candidate.updated_at = datetime.utcnow()
+        session.add(candidate)
+    session.execute(
+        text("UPDATE fundtransaction SET fund_code = :code WHERE fund_code = '000000' AND fund_name = :name"),
+        {"code": code, "name": fund_name},
+    )
+    session.commit()
 
 
 @app.get("/transactions", response_class=HTMLResponse)
