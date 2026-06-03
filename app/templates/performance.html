@@ -4,7 +4,7 @@
 <div class="page-title">
   <div>
     <h1>收益曲线</h1>
-    <p class="muted">每只基金按首个净值日归一化展示，沪深300为虚线基准，圆点为买入或红利再投。</p>
+    <p class="muted">默认只展示现有持仓；已清仓基金可在持仓详情里查看历史买卖点。</p>
   </div>
   <div class="actions">
     <form method="post" action="/performance/benchmark/sync">
@@ -59,8 +59,8 @@
         {% if chart.benchmark_path %}<path class="chart-line benchmark-line" d="{{ chart.benchmark_path }}"/>{% endif %}
         <path class="chart-line fund-line" d="{{ chart.svg_path }}"/>
         {% for marker in chart.marker_positions %}
-        <circle class="buy-marker" cx="{{ marker.x }}" cy="{{ marker.y }}" r="1.6">
-          <title>{{ marker.date }} 买入 ¥{{ "%.2f"|format(marker.amount) }}</title>
+        <circle class="{{ marker.action }}-marker" cx="{{ marker.x }}" cy="{{ marker.y }}" r="1.6">
+          <title>{{ marker.date }} {% if marker.action == "sell" %}卖出{% else %}买入{% endif %} {% if marker.amount %}¥{{ "%.2f"|format(marker.amount) }}{% else %}{{ "%.4f"|format(marker.share) }} 份{% endif %}</title>
         </circle>
         {% endfor %}
       </svg>
@@ -73,12 +73,13 @@
     <div class="chart-legend">
       <span><i class="legend-line fund"></i>基金</span>
       <span><i class="legend-line benchmark"></i>沪深300</span>
-      <span><i class="legend-dot"></i>买入点</span>
+      <span><i class="legend-dot buy"></i>买入</span>
+      <span><i class="legend-dot sell"></i>卖出</span>
     </div>
-    {% if chart.buy_markers %}
+    {% if chart.trade_markers %}
     <div class="buy-list">
-      {% for marker in chart.buy_markers %}
-      <span class="badge">{{ marker.date }} 买入 ¥{{ "%.2f"|format(marker.amount) }}</span>
+      {% for marker in chart.trade_markers %}
+      <span class="badge">{{ marker.date }} {% if marker.action == "sell" %}卖出{% else %}买入{% endif %}{% if marker.amount %} ¥{{ "%.2f"|format(marker.amount) }}{% endif %}</span>
       {% endfor %}
     </div>
     {% endif %}

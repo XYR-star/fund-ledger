@@ -4,13 +4,13 @@
 <div class="page-title">
   <div>
     <h1>持仓</h1>
-    <p class="muted">由正式交易流水和最新净值动态计算。</p>
+    <p class="muted">现有持仓按最新净值动态计算；已清仓只展示已实现收益和收益率。</p>
   </div>
   <a class="btn" href="/nav">同步净值</a>
 </div>
 <div class="table-wrap">
   <table>
-    <thead><tr><th>代码</th><th>名称</th><th>份额</th><th>成本</th><th>最新净值</th><th>净值日</th><th>市值</th><th>浮盈亏</th><th>收益率</th></tr></thead>
+    <thead><tr><th>代码</th><th>名称</th><th>份额</th><th>成本</th><th>最新净值</th><th>净值日</th><th>市值</th><th>浮盈亏</th><th>收益率</th><th>操作</th></tr></thead>
     <tbody>
       {% for h in holdings %}
       <tr>
@@ -23,13 +23,43 @@
         <td>¥{{ "%.2f"|format(h.market_value) }}</td>
         <td>¥{{ "%.2f"|format(h.profit) }}</td>
         <td>{% if h.profit_rate is not none %}{{ "%.2f"|format(h.profit_rate * 100) }}%{% else %}-{% endif %}</td>
+        <td><a class="btn small" href="/holdings/{{ h.fund_code }}">详情</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="9" class="muted">暂无持仓。</td></tr>
+      <tr><td colspan="10" class="muted">暂无现有持仓。</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+
+<section class="panel stack" style="margin-top:16px">
+  <div class="section-head">
+    <div>
+      <h2>已清仓</h2>
+      <p class="muted">这些基金不再出现在主收益曲线里，详情页仍可查看当时买入、卖出操作。</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>代码</th><th>名称</th><th>最后交易日</th><th>已实现收益</th><th>收益率</th><th>操作</th></tr></thead>
+      <tbody>
+        {% for h in closed_positions %}
+        <tr>
+          <td>{{ h.fund_code }}</td>
+          <td>{{ h.fund_name or "-" }}</td>
+          <td>{{ h.last_trade_date or "-" }}</td>
+          <td>¥{{ "%.2f"|format(h.realized_profit) }}</td>
+          <td>{% if h.realized_profit_rate is not none %}{{ "%.2f"|format(h.realized_profit_rate * 100) }}%{% else %}-{% endif %}</td>
+          <td><a class="btn small" href="/holdings/{{ h.fund_code }}">详情</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="muted">暂无已清仓基金。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <section class="panel stack" style="margin-top:16px">
   <h2>xalpha 适配预览</h2>
   <pre class="sample">{{ xalpha_rows }}</pre>

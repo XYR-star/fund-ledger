@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}{{ position.fund_code }} 详情 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>{{ position.fund_code }} {{ position.fund_name or "" }}</h1>
+    <p class="muted">{% if position.is_closed %}已清仓{% else %}现有持仓{% endif %}，按正式流水还原历史操作。</p>
+  </div>
+  <a class="btn" href="/holdings">返回持仓</a>
+</div>
+
+<section class="metrics">
+  <div class="metric">
+    <span>当前市值</span>
+    <strong>¥{{ "%.2f"|format(position.market_value) }}</strong>
+  </div>
+  <div class="metric">
+    <span>{% if position.is_closed %}已实现收益{% else %}浮盈亏{% endif %}</span>
+    <strong>¥{{ "%.2f"|format(position.realized_profit if position.is_closed else position.profit) }}</strong>
+  </div>
+  <div class="metric">
+    <span>收益率</span>
+    <strong>
+      {% if position.is_closed and position.realized_profit_rate is not none %}
+      {{ "%.2f"|format(position.realized_profit_rate * 100) }}%
+      {% elif position.profit_rate is not none %}
+      {{ "%.2f"|format(position.profit_rate * 100) }}%
+      {% else %}
+      -
+      {% endif %}
+    </strong>
+  </div>
+  <div class="metric">
+    <span>最后交易日</span>
+    <strong>{{ position.last_trade_date or "-" }}</strong>
+  </div>
+</section>
+
+{% if chart %}
+<section class="panel chart-card" style="margin-top:16px">
+  <div class="chart-head">
+    <div>
+      <h2>收益曲线</h2>
+      <p class="muted">{{ chart.start_date }} 至 {{ chart.end_date }}</p>
+    </div>
+    <div class="chart-metrics">
+      <span class="badge">基金 {{ format_return(chart.latest_return) }}</span>
+      <span class="badge">沪深300 {{ format_return(chart.benchmark_return) }}</span>
+      <span class="badge">超额 {{ format_return(chart.excess_return) }}</span>
+    </div>
+  </div>
+  <div class="chart-wrap">
+    <svg class="performance-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="{{ chart.fund_code }} 收益曲线">
+      {% for tick in chart.y_ticks %}
+      <line class="chart-grid-line" x1="0" y1="{{ tick.y }}" x2="100" y2="{{ tick.y }}"/>
+      {% endfor %}
+      {% if chart.benchmark_path %}<path class="chart-line benchmark-line" d="{{ chart.benchmark_path }}"/>{% endif %}
+      <path class="chart-line fund-line" d="{{ chart.svg_path }}"/>
+      {% for marker in chart.marker_positions %}
+      <circle class="{{ marker.action }}-marker" cx="{{ marker.x }}" cy="{{ marker.y }}" r="1.7">
+        <title>{{ marker.date }} {% if marker.action == "sell" %}卖出{% else %}买入{% endif %} {% if marker.amount %}¥{{ "%.2f"|format(marker.amount) }}{% else %}{{ "%.4f"|format(marker.share) }} 份{% endif %}</title>
+      </circle>
+      {% endfor %}
+    </svg>
+    <div class="chart-axis">
+      {% for tick in chart.y_ticks %}
+      <span style="top: {{ tick.y }}%">{{ tick.label }}</span>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="chart-legend">
+    <span><i class="legend-line fund"></i>基金</span>
+    <span><i class="legend-line benchmark"></i>沪深300</span>
+    <span><i class="legend-dot buy"></i>买入</span>
+    <span><i class="legend-dot sell"></i>卖出</span>
+  </div>
+</section>
+{% else %}
+<section class="panel muted" style="margin-top:16px">暂无可绘制曲线。需要同步这只基金的净值后显示。</section>
+{% endif %}
+
+<section class="panel stack" style="margin-top:16px">
+  <h2>交易流水</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>交易日</th><th>确认日</th><th>操作</th><th>金额</th><th>份额</th><th>净值</th><th>手续费</th><th>来源</th></tr></thead>
+      <tbody>
+        {% for tx in transactions %}
+        <tr>
+          <td>{{ tx.trade_date }}</td>
+          <td>{{ tx.confirm_date or "-" }}</td>
+          <td><span class="badge">{{ tx.action.value }}</span></td>
+          <td>{% if tx.amount_cny is not none %}¥{{ "%.2f"|format(tx.amount_cny) }}{% else %}-{% endif %}</td>
+          <td>{% if tx.share is not none %}{{ "%.4f"|format(tx.share) }}{% else %}-{% endif %}</td>
+          <td>{% if tx.nav is not none %}{{ "%.4f"|format(tx.nav) }}{% else %}-{% endif %}</td>
+          <td>{% if tx.fee is not none %}¥{{ "%.2f"|format(tx.fee) }}{% else %}-{% endif %}</td>
+          <td>{{ tx.source_file or "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

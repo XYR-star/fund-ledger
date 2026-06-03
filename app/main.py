@@ -35,7 +35,7 @@ from .models import (
 from .nav import sync_nav_for_fund
 from .ocr import recognize_file
 from .performance import build_performance_charts, format_return, sync_hs300
-from .portfolio import calculate_holdings, xalpha_rows
+from .portfolio import calculate_holdings, calculate_position_summaries, xalpha_rows
 from .templates import templates
 
 
@@ -1443,9 +1443,45 @@ def holdings_page(
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
+    positions = calculate_position_summaries(session)
     return templates.TemplateResponse(
         "holdings.html",
-        {"request": request, "holdings": calculate_holdings(session), "xalpha_rows": xalpha_rows(session)},
+        {
+            "request": request,
+            "holdings": [item for item in positions if not item.is_closed],
+            "closed_positions": [item for item in positions if item.is_closed],
+            "xalpha_rows": xalpha_rows(session),
+        },
+    )
+
+
+@app.get("/holdings/{fund_code}", response_class=HTMLResponse)
+def holding_detail_page(
+    fund_code: str,
+    request: Request,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    fund_code = fund_code.zfill(6)
+    positions = calculate_position_summaries(session)
+    position = next((item for item in positions if item.fund_code == fund_code), None)
+    if not position:
+        raise HTTPException(status_code=404, detail="position not found")
+    transactions = session.exec(
+        select(FundTransaction)
+        .where(FundTransaction.fund_code == fund_code)
+        .order_by(FundTransaction.trade_date, FundTransaction.id)
+    ).all()
+    charts = build_performance_charts(session, include_closed=True, fund_code=fund_code)
+    return templates.TemplateResponse(
+        "holding_detail.html",
+        {
+            "request": request,
+            "position": position,
+            "transactions": transactions,
+            "chart": charts[0] if charts else None,
+            "format_return": format_return,
+        },
     )
 
 

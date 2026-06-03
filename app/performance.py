@@ -7,6 +7,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from .models import BenchmarkNav, FundNav, FundTransaction, TransactionAction
+from .portfolio import calculate_position_summaries
 
 
 HS300_CODE = "000300"
@@ -20,9 +21,10 @@ class ChartPoint:
 
 
 @dataclass
-class BuyMarker:
+class TradeMarker:
     date: date
     value: float
+    action: str
     amount: float
     share: float
 
@@ -36,7 +38,7 @@ class FundPerformanceChart:
     excess_return: float | None
     fund_points: list[ChartPoint]
     benchmark_points: list[ChartPoint]
-    buy_markers: list[BuyMarker]
+    trade_markers: list[TradeMarker]
     svg_path: str
     benchmark_path: str
     marker_positions: list[dict[str, Any]]
@@ -44,13 +46,33 @@ class FundPerformanceChart:
     start_date: date | None
     end_date: date | None
 
+    @property
+    def buy_markers(self) -> list[TradeMarker]:
+        return [marker for marker in self.trade_markers if marker.action == "buy"]
 
-def build_performance_charts(session: Session) -> list[FundPerformanceChart]:
+
+def build_performance_charts(
+    session: Session,
+    include_closed: bool = False,
+    fund_code: str | None = None,
+) -> list[FundPerformanceChart]:
     txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)).all()
-    funds = sorted({tx.fund_code for tx in txs})
+    if fund_code:
+        funds = [fund_code]
+    else:
+        funds = sorted({tx.fund_code for tx in txs})
+    if not include_closed and not fund_code:
+        active_codes = {
+            item.fund_code
+            for item in calculate_position_summaries(session)
+            if not item.is_closed
+        }
+        funds = [code for code in funds if code in active_codes]
     charts = []
     for fund_code in funds:
         fund_txs = [tx for tx in txs if tx.fund_code == fund_code]
+        if not fund_txs:
+            continue
         fund_name = next((tx.fund_name for tx in reversed(fund_txs) if tx.fund_name), "")
         navs = session.exec(
             select(FundNav).where(FundNav.fund_code == fund_code).order_by(FundNav.nav_date)
@@ -64,11 +86,11 @@ def build_performance_charts(session: Session) -> list[FundPerformanceChart]:
         if len(fund_points) < 2:
             continue
         benchmark_points = benchmark_points_for_range(session, fund_points[0].date, fund_points[-1].date)
-        buy_markers = buy_markers_for_transactions(fund_txs, fund_points)
+        trade_markers = trade_markers_for_transactions(fund_txs, fund_points)
         latest_return = fund_points[-1].value if fund_points else None
         benchmark_return = benchmark_points[-1].value if benchmark_points else None
         values = [point.value for point in fund_points + benchmark_points]
-        for marker in buy_markers:
+        for marker in trade_markers:
             values.append(marker.value)
         y_min, y_max = padded_range(values)
         charts.append(
@@ -84,10 +106,10 @@ def build_performance_charts(session: Session) -> list[FundPerformanceChart]:
                 ),
                 fund_points=fund_points,
                 benchmark_points=benchmark_points,
-                buy_markers=buy_markers,
+                trade_markers=trade_markers,
                 svg_path=svg_path(fund_points, y_min, y_max),
                 benchmark_path=svg_path(benchmark_points, y_min, y_max),
-                marker_positions=marker_positions(buy_markers, fund_points[0].date, fund_points[-1].date, y_min, y_max),
+                marker_positions=marker_positions(trade_markers, fund_points[0].date, fund_points[-1].date, y_min, y_max),
                 y_ticks=y_ticks(y_min, y_max),
                 start_date=fund_points[0].date,
                 end_date=fund_points[-1].date,
@@ -117,21 +139,23 @@ def benchmark_points_for_range(session: Session, start_date: date, end_date: dat
     return normalize_nav_points([(item.nav_date, item.close_value) for item in items])
 
 
-def buy_markers_for_transactions(
+def trade_markers_for_transactions(
     txs: list[FundTransaction],
     fund_points: list[ChartPoint],
-) -> list[BuyMarker]:
+) -> list[TradeMarker]:
     markers = []
     for tx in txs:
-        if tx.action not in {TransactionAction.buy, TransactionAction.dividend_reinvest}:
+        if tx.action not in {TransactionAction.buy, TransactionAction.sell, TransactionAction.dividend_reinvest}:
             continue
         point = nearest_point_on_or_after(fund_points, tx.trade_date)
         if not point:
             continue
+        action = "sell" if tx.action == TransactionAction.sell else "buy"
         markers.append(
-            BuyMarker(
+            TradeMarker(
                 date=point.date,
                 value=point.value,
+                action=action,
                 amount=tx.amount_cny or 0.0,
                 share=tx.share or 0.0,
             )
@@ -266,7 +290,7 @@ def svg_path(points: list[ChartPoint], y_min: float, y_max: float) -> str:
 
 
 def marker_positions(
-    markers: list[BuyMarker],
+    markers: list[TradeMarker],
     start: date,
     end: date,
     y_min: float,
@@ -275,7 +299,16 @@ def marker_positions(
     result = []
     for marker in markers:
         x, y = point_to_svg(marker.date, marker.value, start, end, y_min, y_max)
-        result.append({"x": x, "y": y, "date": marker.date, "amount": marker.amount, "share": marker.share})
+        result.append(
+            {
+                "x": x,
+                "y": y,
+                "date": marker.date,
+                "action": marker.action,
+                "amount": marker.amount,
+                "share": marker.share,
+            }
+        )
     return result
 
 
