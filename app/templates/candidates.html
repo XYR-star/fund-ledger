@@ -11,16 +11,35 @@
     <a class="btn" href="/upload">新增</a>
   </div>
 </div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+
+{% if unmatched %}
+<section class="panel stack">
+  <h2 style="color:var(--warn)">未匹配 ({{ unmatched|length }})</h2>
+  <p class="muted">以下候选缺少基金代码，需手动修正。OCR 识别错误通常会影响相同名称的所有行，修正后相同名称行自动同步。</p>
+  {% for group_name, count, samples in unmatched_groups %}
+  <div class="actions" style="justify-content:space-between; align-items:center; padding: 8px; background: var(--input-bg); border-radius: 6px;">
+    <div>
+      <strong>{{ group_name }}</strong>
+      <span class="badge">{{ count }} 条</span>
+      <span class="muted" style="font-size:11px">{{ samples }}</span>
+    </div>
+    <form method="post" action="/candidates/fix-unmatched" style="display:flex; gap:6px; align-items:center;">
+      <input type="hidden" name="fund_name" value="{{ group_name }}">
+      <input name="fund_code" placeholder="6位代码" required style="width:90px;">
+      <button class="btn primary" type="submit">修正</button>
+    </form>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
 
 <div class="stack">
-{% for c in candidates %}
+{% for c in matched %}
   <section class="panel stack">
     <div class="actions">
       <span class="badge">{{ c.status }}</span>
       <strong>{{ c.fund_code }} {{ c.fund_name }}</strong>
-      {% if c.fund_code == "000000" %}
-      <form method="post" action="/candidates/{{ c.id }}/suggest-code" style="display:inline"><button class="btn primary" type="submit">搜索代码</button></form>
-      {% endif %}
       <span class="muted">{{ c.raw_text }}</span>
     </div>
     <form class="form-grid" method="post" action="/candidates/{{ c.id }}/update">
@@ -60,7 +79,7 @@
     </div>
   </section>
 {% else %}
-  <section class="panel muted">暂无候选交易。</section>
+  <section class="panel muted">暂无已匹配候选交易。</section>
 {% endfor %}
 </div>
 {% endblock %}

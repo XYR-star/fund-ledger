@@ -395,7 +395,8 @@ def extract_fund_name(text: str, fund_code: str | None, known_names: dict[str, s
     cleaned = re.sub(r"\d{1,2}:\d{2}", " ", cleaned)
     if fund_code:
         cleaned = cleaned.replace(fund_code, " ")
-    noise_words = r"买入|申购|卖出|赎回|成功|失败|撤销|取消|已确认|交易金额|人民币|现金分红"
+    cleaned = re.sub(r"[（(]\s*(?:人民币|美元|港元|后端|前端|现汇|现钞)\s*(?:份额)?[）)]", " ", cleaned)
+    noise_words = r"买入|申购|卖出|赎回|成功|失败|撤销|取消|已确认|交易金额|现金分红"
     cleaned = re.sub(noise_words, " ", cleaned)
     cleaned = re.sub(r"(?:^|\s)\d+(?:\.\d+)?\s*(?:元|份)?(?:\s|$)", " ", cleaned)
     cleaned = re.sub(r"[,，.。：:\-]+", " ", cleaned)
@@ -1665,9 +1666,25 @@ def candidates_page(
             FundTransactionCandidate.status, desc(FundTransactionCandidate.created_at)
         )
     ).all()
+    matched = [c for c in candidates if c.fund_code != "000000"]
+    unmatched = [c for c in candidates if c.fund_code == "000000"]
+    groups: dict[str, list] = {}
+    for c in unmatched:
+        key = c.fund_name or c.raw_text[:30]
+        groups.setdefault(key, []).append(c)
+    unmatched_groups = []
+    for name, items in sorted(groups.items(), key=lambda x: -len(x[1])):
+        samples = "; ".join(set(c.raw_text[:40] for c in items))[:80]
+        unmatched_groups.append((name, len(items), samples))
     return templates.TemplateResponse(
         "candidates.html",
-        {"request": request, "candidates": candidates, "actions": list(TransactionAction)},
+        {
+            "request": request,
+            "matched": matched,
+            "unmatched": unmatched,
+            "unmatched_groups": unmatched_groups,
+            "actions": list(TransactionAction),
+        },
     )
 
 
@@ -1865,6 +1882,62 @@ def candidate_suggest_code(
     else:
         message = "无法匹配基金代码，请手动填写"
     return redirect(f"/candidates?message={message}")
+
+
+@app.post("/candidates/fix-unmatched")
+def candidates_fix_unmatched(
+    fund_name: str = Form(...),
+    fund_code: str = Form(...),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    code = fund_code.strip().zfill(6)
+    if not code.isdigit() or len(code) != 6:
+        return redirect("/candidates?message=无效的基金代码")
+    candidates = session.exec(
+        select(FundTransactionCandidate).where(
+            FundTransactionCandidate.fund_name == fund_name,
+            FundTransactionCandidate.fund_code == "000000",
+            FundTransactionCandidate.status == CandidateStatus.pending,
+        )
+    ).all()
+    fixed = 0
+    for c in candidates:
+        c.fund_code = code
+        c.confidence = 0.8
+        c.updated_at = datetime.utcnow()
+        session.add(c)
+        fixed += 1
+    if fixed:
+        try:
+            synced = fetch_fund_rule_from_akshare(code)
+            rule = session.get(FundRule, code) or FundRule(fund_code=code)
+            rule.fund_name = synced.fund_name or fund_name
+            rule.fund_type = synced.fund_type or rule.fund_type
+            if synced.buy_confirm_days is not None:
+                rule.buy_confirm_days = synced.buy_confirm_days
+            if synced.sell_confirm_days is not None:
+                rule.sell_confirm_days = synced.sell_confirm_days
+            if synced.buy_fee_rate is not None:
+                rule.buy_fee_rate = synced.buy_fee_rate
+            rule.sync_source = synced.source
+            rule.synced_at = sync_timestamp()
+            rule.updated_at = datetime.utcnow()
+            session.add(rule)
+            # 也更新已确认流水
+            session.exec(
+                text("UPDATE fundtransaction SET fund_code = :code WHERE fund_code = '000000' AND fund_name = :name"),
+                {"code": code, "name": fund_name},
+            )
+        except Exception as exc:
+            pass
+        session.commit()
+        try:
+            sync_nav_for_fund(session, code)
+        except Exception:
+            pass
+        return redirect(f"/candidates?message=已将 {fixed} 条「{fund_name}」的代码修正为 {code}")
+    return redirect("/candidates?message=未找到需要修正的候选")
 
 
 @app.get("/transactions", response_class=HTMLResponse)

@@ -328,10 +328,9 @@ def search_fund_by_name(fund_name: str) -> dict[str, str] | None:
                     row = matches.iloc[0]
                     return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
     for search in [clean, hw]:
-        base = re.sub(r"[\s]*[（(][^）)]*[）)]", "", search)
         for noise in ["中国", "指数", "混合", "债券", "发起式", "ETF"]:
-            shorter = base.replace(noise, "")
-            if len(shorter) < 4:
+            shorter = search.replace(noise, "")
+            if len(shorter) < 4 or shorter == search:
                 continue
             matches = df[df["基金简称"].str.contains(shorter, na=False, regex=False)]
             if len(matches) == 1:
@@ -342,6 +341,17 @@ def search_fund_by_name(fund_name: str) -> dict[str, str] | None:
                 if len(short) >= 1:
                     row = short.iloc[0]
                     return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
+    for search in [clean, hw, fund_name.strip()]:
+        if len(search) < 6:
+            continue
+        matched = []
+        for _, r in df.iterrows():
+            rname = str(r["基金简称"])
+            if len(rname) >= 6 and rname in search:
+                matched.append((len(rname), rname, r))
+        if len(matched) == 1:
+            _, _, row = matched[0]
+            return {"fund_code": str(row["基金代码"]).zfill(6), "fund_name": str(row["基金简称"]), "fund_type": str(row["基金类型"])}
     fallback = _search_rows_by_core(fund_name, _rows(df))
     if fallback:
         return fallback
@@ -427,7 +437,7 @@ def _search_rows_by_core(fund_name: str, rows: list[dict[str, Any]]) -> dict[str
                 "fund_type": str(row["基金类型"]),
             }
         score = _substring_score(query_core, row_core)
-        if score >= 0.78:
+        if score >= 0.65:
             scored.append((score, len(row_core), row))
     if not scored:
         return None
@@ -480,7 +490,7 @@ def _fund_name_core(value: str) -> str:
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
-    for noise in ("基金", "指数型", "混合型", "发起式"):
+    for noise in ("基金", "指数型", "混合型", "发起式", "人民币份额", "美元份额", "港元份额"):
         text = text.replace(noise, "")
     return text
 
