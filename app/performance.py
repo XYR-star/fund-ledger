@@ -1,3 +1,5 @@
+import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -145,17 +147,14 @@ def nearest_point_on_or_after(points: list[ChartPoint], target: date) -> ChartPo
 
 
 def sync_hs300(session: Session) -> tuple[int, str | None]:
-    try:
-        import akshare as ak
-
-        df = ak.stock_zh_index_daily_em(symbol="sh000300")
-    except Exception as exc:  # pragma: no cover - network/source dependent
-        return 0, str(exc)
-    if df is None or df.empty:
+    rows, source, error = fetch_hs300_rows()
+    if error:
+        return 0, error
+    if not rows:
         return 0, "empty benchmark response"
     inserted = 0
-    for _, row in df.iterrows():
-        nav_date = parse_date(row.get("date") or row.get("日期"))
+    for row in rows:
+        nav_date = parse_date(row.get("date") or row.get("日期") or row.get("day"))
         close_value = parse_float(row.get("close") or row.get("收盘"))
         if nav_date is None or close_value is None:
             continue
@@ -167,6 +166,7 @@ def sync_hs300(session: Session) -> tuple[int, str | None]:
         ).first()
         if existing:
             existing.close_value = close_value
+            existing.source = source
             existing.updated_at = datetime.utcnow()
             session.add(existing)
         else:
@@ -176,12 +176,48 @@ def sync_hs300(session: Session) -> tuple[int, str | None]:
                     benchmark_name=HS300_NAME,
                     nav_date=nav_date,
                     close_value=close_value,
-                    source="akshare:index_daily_em",
+                    source=source,
                 )
             )
             inserted += 1
     session.commit()
     return inserted, None
+
+
+def fetch_hs300_rows() -> tuple[list[dict[str, Any]], str, str | None]:
+    errors = []
+    try:
+        import akshare as ak
+
+        df = ak.stock_zh_index_daily_em(symbol="sh000300")
+    except Exception as exc:  # pragma: no cover - network/source dependent
+        errors.append(f"akshare: {exc}")
+    else:
+        if df is not None and not df.empty:
+            return list(df.to_dict(orient="records")), "akshare:index_daily_em", None
+        errors.append("akshare: empty benchmark response")
+
+    try:
+        import requests
+
+        response = requests.get(
+            "https://quotes.sina.cn/cn/api/jsonp.php/var%20_sh000300_=/"
+            "CN_MarketDataService.getKLineData",
+            params={"symbol": "sh000300", "scale": "240", "ma": "no", "datalen": "1500"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        match = re.search(r"\((\[.*\])\)", response.text, re.S)
+        if not match:
+            raise RuntimeError("unexpected sina response")
+        rows = json.loads(match.group(1))
+        if rows:
+            return rows, "sina:kline", None
+        errors.append("sina: empty benchmark response")
+    except Exception as exc:  # pragma: no cover - network/source dependent
+        errors.append(f"sina: {exc}")
+
+    return [], "", "; ".join(errors)
 
 
 def parse_date(value) -> date | None:
