@@ -24,7 +24,9 @@
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
-{% if document.error_message %}<section class="panel error">{{ document.error_message }}</section>{% endif %}
+{% if document.error_message %}
+<section class="panel{% if '⚠' in document.error_message %} warn{% else %} error{% endif %}">{{ document.error_message }}</section>
+{% endif %}
 
 <section class="panel stack">
   <h2>文件与动作</h2>

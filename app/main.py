@@ -785,6 +785,35 @@ def process_ocr_job(payload: dict[str, Any]) -> str:
         return f"OCR 完成，识别 {len(result.text)} 个字符"
 
 
+import difflib
+
+
+def _check_content_similarity(
+    session: Session, document: ImportDocument
+) -> tuple[ImportDocument, float] | None:
+    text = document.ocr_text or document.raw_text
+    if len(text) < 40:
+        return None
+    normalized = re.sub(r"\d+", "0", text)
+    normalized = re.sub(r"\s+", " ", normalized)
+    others = session.exec(
+        select(ImportDocument).where(
+            ImportDocument.id != document.id,
+            ImportDocument.status.notin_([ImportStatus.deleted]),
+        ).order_by(desc(ImportDocument.created_at))
+    ).all()
+    for other in others:
+        other_text = other.ocr_text or other.raw_text
+        if len(other_text) < 40:
+            continue
+        other_norm = re.sub(r"\d+", "0", other_text)
+        other_norm = re.sub(r"\s+", " ", other_norm)
+        ratio = difflib.SequenceMatcher(None, normalized, other_norm).ratio()
+        if ratio >= 0.85:
+            return other, ratio
+    return None
+
+
 def process_auto_import_job(payload: dict[str, Any]) -> str:
     document_id = int(payload["document_id"])
     messages = []
@@ -819,6 +848,18 @@ def process_auto_import_job(payload: dict[str, Any]) -> str:
             session.add(document)
             session.commit()
             messages.append(f"OCR {len(result.text)} 字")
+
+            similar = _check_content_similarity(session, document)
+            if similar is not None:
+                other_doc, ratio = similar
+                document.error_message = (
+                    f"⚠ 与导入 #{other_doc.id}「{other_doc.file_name or '手动文本'}」"
+                    f"内容高度相似（{ratio:.0%}），可能重复，请核实"
+                )
+                document.updated_at = datetime.utcnow()
+                session.add(document)
+                session.commit()
+                messages.append(f"发现相似文档 #{similar.id}")
 
         text = document.ocr_text or document.raw_text
         if not text.strip():
@@ -1435,8 +1476,11 @@ async def upload_submit(
     documents: list[ImportDocument] = []
     if uploaded_files:
         for upload in uploaded_files:
-            document = await create_import_document_from_upload(session, upload, raw_text)
-            documents.append(document)
+            try:
+                document = await create_import_document_from_upload(session, upload, raw_text)
+                documents.append(document)
+            except HTTPException as exc:
+                return redirect(f"/upload?message={exc.detail}")
     else:
         document = create_import_document_from_text(session, raw_text)
         documents.append(document)
@@ -1460,6 +1504,20 @@ async def create_import_document_from_upload(
     target = settings.uploads_dir / safe_name
     target.write_bytes(content)
     source_hash = hash_file(target)
+
+    existing = session.exec(
+        select(ImportDocument).where(
+            ImportDocument.file_name == upload.filename,
+            ImportDocument.status.notin_([ImportStatus.deleted]),
+        )
+    ).first()
+    if existing:
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=409,
+            detail=f"文件「{upload.filename}」已存在（导入 #{existing.id}），请勿重复上传",
+        )
+
     document = ImportDocument(
         raw_text=raw_text,
         file_name=upload.filename,

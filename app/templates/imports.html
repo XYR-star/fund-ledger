@@ -20,7 +20,12 @@
       {% for doc in documents %}
       <tr>
         <td>{{ doc.id }}</td>
-        <td>{{ doc.file_name or "手动文本" }}</td>
+        <td>
+          {{ doc.file_name or "手动文本" }}
+          {% if doc.error_message and '⚠' in doc.error_message %}
+          <span class="badge" style="background:var(--warn);color:#fff" title="{{ doc.error_message }}">重复?</span>
+          {% endif %}
+        </td>
         <td><span class="badge">{{ doc.status.value }}</span></td>
         <td>{{ (doc.ocr_text or doc.raw_text)|length }}</td>
         <td>{{ doc.updated_at }}</td>
