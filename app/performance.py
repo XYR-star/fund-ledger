@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
-from .models import BenchmarkNav, FundNav, FundTransaction, TransactionAction
+from .models import BenchmarkNav, FundNav, FundRule, FundTransaction, TransactionAction
 from .portfolio import calculate_position_summaries
 
 
@@ -59,6 +59,11 @@ def build_performance_charts(
     fund_code: str | None = None,
 ) -> list[FundPerformanceChart]:
     txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)).all()
+    money_codes = {
+        rule.fund_code
+        for rule in session.exec(select(FundRule)).all()
+        if "货币" in (rule.fund_type or "")
+    }
     if fund_code:
         funds = [fund_code]
     else:
@@ -83,7 +88,11 @@ def build_performance_charts(
             continue
         start_date = min(tx.trade_date for tx in fund_txs)
         fund_points = normalize_nav_points(
-            [(item.nav_date, item.unit_nav) for item in navs if item.nav_date >= start_date]
+            [
+                (item.nav_date, 1.0 if fund_code in money_codes else item.unit_nav)
+                for item in navs
+                if item.nav_date >= start_date
+            ]
         )
         if len(fund_points) < 2:
             continue

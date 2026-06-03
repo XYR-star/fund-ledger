@@ -48,6 +48,7 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 def on_startup() -> None:
     init_db()
     register_background_jobs()
+    normalize_money_fund_records()
     recover_interrupted_jobs()
 
 
@@ -225,41 +226,35 @@ def create_inferred_candidates_from_minimal_text(
             rule = get_fund_rule(session, fund_code)
             warnings.append(f"跳过 ETF 基金 {fund_code} {rule.fund_name or fund_name}")
             continue
-        rule = get_fund_rule(session, fund_code)
-        nav_item = find_effective_nav(session, fund_code, trade_day, submitted_at, rule)
-        confirm_date = (
-            find_nth_nav_date(
-                session,
-                fund_code,
-                nav_item.nav_date,
-                rule.buy_confirm_days if action == TransactionAction.buy else rule.sell_confirm_days,
-            )
-            if nav_item
-            else None
-        )
-        nav_value = nav_item.unit_nav if nav_item else None
         money = is_money_fund(session, fund_code)
-        if money and nav_value is None:
-            nav_value = 1.0
-        fee = 0.0 if action == TransactionAction.buy else None
-        share = None
-        if action == TransactionAction.buy and nav_value:
-            buy_fee_rate = 0.0 if money else rule.buy_fee_rate
-            fee = round(amount * buy_fee_rate, 2)
-            share = round((amount - fee) / nav_value, 2)
-        if action == TransactionAction.sell and nav_value:
-            fee = 0.0 if money else infer_redemption_fee(session, fund_code, amount, nav_value, nav_item.nav_date)
+        amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
+            session,
+            fund_code,
+            action,
+            amount if action != TransactionAction.sell else None,
+            amount if action == TransactionAction.sell else None,
+            1.0 if money else None,
+            trade_day,
+            submitted_at=submitted_at,
+        )
+        nav_value = 1.0 if money else None
+        if not money:
+            nav_item = session.exec(
+                select(FundNav)
+                .where(FundNav.fund_code == fund_code, FundNav.nav_date == effective_trade_date)
+            ).first()
+            nav_value = nav_item.unit_nav if nav_item else None
         session.add(
             FundTransactionCandidate(
                 status=status,
                 fund_code=fund_code,
                 fund_name=fund_name,
-                trade_date=nav_item.nav_date if nav_item else trade_day,
+                trade_date=effective_trade_date,
                 submitted_at=submitted_at,
                 confirm_date=confirm_date,
                 action=action,
-                amount_cny=amount if action != TransactionAction.sell else None,
-                share=share if action != TransactionAction.sell else amount,
+                amount_cny=amount_cny,
+                share=share,
                 nav=nav_value,
                 fee=fee,
                 source_file=source_file,
@@ -313,6 +308,67 @@ def is_money_fund(session: Session, fund_code: str) -> bool:
     if not rule or not rule.fund_type:
         return False
     return "货币" in rule.fund_type
+
+
+def normalize_money_fund_records() -> int:
+    with Session(engine) as session:
+        money_codes = {
+            rule.fund_code
+            for rule in session.exec(select(FundRule)).all()
+            if "货币" in (rule.fund_type or "")
+        }
+        changed = 0
+        for code in money_codes:
+            for item in session.exec(
+                select(FundTransactionCandidate).where(FundTransactionCandidate.fund_code == code)
+            ).all():
+                item_changed = normalize_money_record(item)
+                changed += item_changed
+                if item_changed:
+                    item.updated_at = datetime.utcnow()
+                    session.add(item)
+            for item in session.exec(
+                select(FundTransaction).where(FundTransaction.fund_code == code)
+            ).all():
+                item_changed = normalize_money_record(item)
+                changed += item_changed
+                if item_changed:
+                    session.add(item)
+        if changed:
+            session.commit()
+        return changed
+
+
+def normalize_money_record(item: FundTransactionCandidate | FundTransaction) -> int:
+    if item.action == TransactionAction.buy:
+        canonical = item.amount_cny if item.amount_cny is not None else item.share
+        return _apply_money_values(item, canonical, canonical, nav=1.0, fee=0.0)
+    if item.action == TransactionAction.sell:
+        canonical = item.share if item.share is not None else item.amount_cny
+        return _apply_money_values(item, canonical, canonical, nav=1.0, fee=0.0)
+    if item.action == TransactionAction.dividend:
+        return _apply_money_values(item, item.amount_cny, None, nav=1.0, fee=0.0)
+    if item.action == TransactionAction.dividend_reinvest:
+        canonical = item.amount_cny if item.amount_cny is not None else item.share
+        return _apply_money_values(item, canonical, canonical, nav=1.0, fee=0.0)
+    return _apply_money_values(item, item.amount_cny, item.share, nav=1.0, fee=0.0)
+
+
+def _apply_money_values(
+    item: FundTransactionCandidate | FundTransaction,
+    amount: float | None,
+    share: float | None,
+    nav: float,
+    fee: float,
+) -> int:
+    changed = 0
+    amount = round(amount, 2) if amount is not None else None
+    share = round(share, 2) if share is not None else None
+    for key, value in (("amount_cny", amount), ("share", share), ("nav", nav), ("fee", fee)):
+        if getattr(item, key) != value:
+            setattr(item, key, value)
+            changed = 1
+    return changed
 
 
 def extract_trade_datetime(text: str) -> tuple[date | None, time | None]:
@@ -485,11 +541,18 @@ def redemption_rate_for_days(tiers: list[FundFeeTier], holding_days: int) -> flo
 
 def open_lots(session: Session, fund_code: str) -> list[tuple[float, date]]:
     lots: list[tuple[float, date]] = []
-    transactions = session.exec(
+    transactions = sorted(
+        session.exec(
         select(FundTransaction)
         .where(FundTransaction.fund_code == fund_code)
         .order_by(FundTransaction.trade_date, FundTransaction.id)
-    ).all()
+        ).all(),
+        key=lambda tx: (
+            tx.trade_date,
+            0 if tx.action in {TransactionAction.buy, TransactionAction.dividend_reinvest} else 1,
+            tx.id or 0,
+        ),
+    )
     for tx in transactions:
         if tx.action in {TransactionAction.buy, TransactionAction.dividend_reinvest} and tx.share:
             lots.append((tx.share, tx.trade_date))
@@ -522,6 +585,25 @@ def apply_trade_calculation(
         return amount_cny, share, None, None, trade_date
     rule = get_fund_rule(session, fund_code)
     money = is_money_fund(session, fund_code)
+    if money:
+        confirm_date = find_nth_nav_date(
+            session,
+            fund_code,
+            trade_date,
+            rule.buy_confirm_days if action == TransactionAction.buy else rule.sell_confirm_days,
+        ) or trade_date
+        if action == TransactionAction.buy:
+            canonical = amount_cny if amount_cny is not None else share
+            return canonical, canonical, 0.0, confirm_date, trade_date
+        if action == TransactionAction.sell:
+            canonical = share if share is not None else amount_cny
+            return canonical, canonical, 0.0, confirm_date, trade_date
+        if action == TransactionAction.dividend:
+            return amount_cny, None, 0.0, confirm_date, trade_date
+        if action == TransactionAction.dividend_reinvest:
+            canonical = amount_cny if amount_cny is not None else share
+            return canonical, canonical, 0.0, confirm_date, trade_date
+        return amount_cny, share, 0.0, confirm_date, trade_date
     effective_nav_item = find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
     effective_trade_date = effective_nav_item.nav_date if effective_nav_item else trade_date
     nav_value = effective_nav_item.unit_nav if effective_nav_item else nav
@@ -595,9 +677,10 @@ def create_candidates_from_rows(
             row.get("submitted_at") or row.get("submitted_time") or row.get("trade_time")
         )
         rule = get_fund_rule(session, fund_code)
-        effective_nav_item = find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
+        money = is_money_fund(session, fund_code)
+        effective_nav_item = None if money else find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
         effective_nav_value = effective_nav_item.unit_nav if effective_nav_item else None
-        nav = parse_float_value(row.get("nav")) or effective_nav_value
+        nav = 1.0 if money else (parse_float_value(row.get("nav")) or effective_nav_value)
         amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
             session,
             fund_code,
@@ -872,6 +955,8 @@ def sync_related_market_data(session: Session, fund_codes: set[str]) -> list[str
                             )
                         )
                 session.commit()
+                if "货币" in (rule.fund_type or ""):
+                    normalize_money_fund_records()
         except Exception as exc:
             errors.append(f"{code} 规则同步失败：{exc}")
 
@@ -938,6 +1023,8 @@ def process_fund_rule_sync_job(payload: dict[str, Any]) -> str:
                     )
                 )
         session.commit()
+        if "货币" in (rule.fund_type or ""):
+            normalize_money_fund_records()
         return f"{code} 规则同步完成"
 
 
@@ -1613,10 +1700,10 @@ def candidate_update(
     )
     candidate.amount_cny = amount_cny if amount_cny is not None else calc_amount
     candidate.share = share if share is not None else calc_share
-    candidate.nav = nav
+    candidate.nav = 1.0 if is_money_fund(session, fund_code.zfill(6)) else nav
     candidate.fee = fee if fee is not None else calc_fee
     candidate.confirm_date = confirm_date or calc_confirm
-    candidate.trade_date = calc_trade_date
+    candidate.trade_date = trade_date if confirm_date else calc_trade_date
     candidate.updated_at = datetime.utcnow()
     session.add(candidate)
     session.commit()

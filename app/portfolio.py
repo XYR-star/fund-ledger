@@ -3,7 +3,7 @@ from datetime import date
 
 from sqlmodel import Session, desc, select
 
-from .models import FundNav, FundTransaction, TransactionAction
+from .models import FundNav, FundRule, FundTransaction, TransactionAction
 
 EPS_SHARE = 0.000001
 EPS_COST = 0.01
@@ -33,7 +33,15 @@ class PositionSummary(Holding):
 
 
 def calculate_position_summaries(session: Session) -> list[PositionSummary]:
-    txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date)).all()
+    txs = sorted(
+        session.exec(select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)).all(),
+        key=lambda tx: (tx.trade_date, action_sort_key(tx.action), tx.id or 0),
+    )
+    money_codes = {
+        rule.fund_code
+        for rule in session.exec(select(FundRule)).all()
+        if "货币" in (rule.fund_type or "")
+    }
     grouped: dict[str, dict] = {}
     for tx in txs:
         item = grouped.setdefault(
@@ -80,12 +88,20 @@ def calculate_position_summaries(session: Session) -> list[PositionSummary]:
 
     positions: list[PositionSummary] = []
     for fund_code, item in grouped.items():
-        latest = session.exec(
-            select(FundNav)
-            .where(FundNav.fund_code == fund_code)
-            .order_by(desc(FundNav.nav_date))
-        ).first()
-        latest_nav = latest.unit_nav if latest else None
+        if fund_code in money_codes:
+            latest = session.exec(
+                select(FundNav)
+                .where(FundNav.fund_code == fund_code)
+                .order_by(desc(FundNav.nav_date))
+            ).first()
+            latest_nav = 1.0
+        else:
+            latest = session.exec(
+                select(FundNav)
+                .where(FundNav.fund_code == fund_code)
+                .order_by(desc(FundNav.nav_date))
+            ).first()
+            latest_nav = latest.unit_nav if latest else None
         market_value = item["share"] * latest_nav if latest_nav else 0.0
         profit = market_value - item["cost"] if latest_nav else 0.0
         profit_rate = profit / item["cost"] if item["cost"] and latest_nav else None
@@ -136,6 +152,16 @@ def calculate_holdings(session: Session) -> list[Holding]:
             )
         )
     return sorted(holdings, key=lambda h: h.market_value, reverse=True)
+
+
+def action_sort_key(action: TransactionAction) -> int:
+    if action in {TransactionAction.buy, TransactionAction.dividend_reinvest}:
+        return 0
+    if action == TransactionAction.dividend:
+        return 1
+    if action == TransactionAction.sell:
+        return 2
+    return 3
 
 
 def xalpha_rows(session: Session) -> list[dict]:

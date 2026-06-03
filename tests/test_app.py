@@ -517,6 +517,170 @@ async def test_llm_rows_apply_submitted_time_cutoff(client):
     assert candidate.nav == 2.0
 
 
+async def test_money_fund_uses_cash_equivalent_values(client):
+    import app.db
+    from app.main import create_candidates_from_rows, normalize_money_fund_records
+    from app.models import FundRule, FundTransaction, FundTransactionCandidate, TransactionAction
+    from app.portfolio import calculate_holdings
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(
+            FundRule(
+                fund_code="000621",
+                fund_name="易方达现金增利货币B",
+                fund_type="货币型-普通货币",
+            )
+        )
+        create_candidates_from_rows(
+            session,
+            [
+                {
+                    "fund_code": "000621",
+                    "fund_name": "易方达现金增利货币B",
+                    "trade_date": "2025-04-23",
+                    "action": "buy",
+                    "amount_cny": 700,
+                    "nav": 0.4436,
+                },
+                {
+                    "fund_code": "000621",
+                    "fund_name": "易方达现金增利货币B",
+                    "trade_date": "2025-04-24",
+                    "action": "sell",
+                    "share": 100,
+                    "nav": 0.4436,
+                },
+            ],
+        )
+        session.commit()
+        candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
+        assert [(c.amount_cny, c.share, c.nav, c.fee) for c in candidates] == [
+            (700, 700, 1.0, 0.0),
+            (100, 100, 1.0, 0.0),
+        ]
+        session.add(
+            FundTransaction(
+                fund_code="000621",
+                fund_name="易方达现金增利货币B",
+                trade_date=date(2025, 4, 23),
+                action=TransactionAction.buy,
+                amount_cny=700,
+                share=1578,
+                nav=0.4436,
+                fee=0,
+            )
+        )
+        session.commit()
+
+    normalize_money_fund_records()
+    with Session(app.db.engine) as session:
+        tx = session.exec(select(FundTransaction)).first()
+        assert (tx.amount_cny, tx.share, tx.nav, tx.fee) == (700, 700, 1.0, 0.0)
+        holding = calculate_holdings(session)[0]
+        assert holding.latest_nav == 1.0
+        assert holding.market_value == 700
+
+
+async def test_same_day_money_buy_is_applied_before_sell_for_cost(client):
+    import app.db
+    from app.models import FundRule, FundTransaction, TransactionAction
+    from app.portfolio import calculate_position_summaries
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(
+            FundRule(
+                fund_code="000621",
+                fund_name="易方达现金增利货币B",
+                fund_type="货币型-普通货币",
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="000621",
+                fund_name="易方达现金增利货币B",
+                trade_date=date(2025, 4, 23),
+                action=TransactionAction.sell,
+                amount_cny=700,
+                share=700,
+                nav=1.0,
+                fee=0,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="000621",
+                fund_name="易方达现金增利货币B",
+                trade_date=date(2025, 4, 23),
+                action=TransactionAction.buy,
+                amount_cny=700,
+                share=700,
+                nav=1.0,
+                fee=0,
+            )
+        )
+        session.commit()
+        position = calculate_position_summaries(session)[0]
+
+    assert position.share == 0
+    assert position.cost == 0
+    assert position.realized_profit == 0
+    assert position.is_closed
+
+
+async def test_candidate_update_preserves_existing_effective_trade_date(client):
+    import app.db
+    from app.main import create_candidates_from_rows
+    from app.models import FundNav, FundTransactionCandidate
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=1.9))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 4), unit_nav=2.1))
+        create_candidates_from_rows(
+            session,
+            [
+                {
+                    "fund_code": "161725",
+                    "fund_name": "招商中证白酒",
+                    "trade_date": "2024-01-02",
+                    "submitted_at": "15:30",
+                    "action": "buy",
+                    "amount_cny": 1000,
+                }
+            ],
+        )
+        session.commit()
+        candidate = session.exec(select(FundTransactionCandidate)).first()
+        candidate_id = candidate.id
+        assert candidate.trade_date == date(2024, 1, 3)
+        assert candidate.confirm_date == date(2024, 1, 4)
+
+    response = await client.post(
+        f"/candidates/{candidate_id}/update",
+        data={
+            "fund_code": "161725",
+            "fund_name": "招商中证白酒",
+            "trade_date": "2024-01-03",
+            "submitted_at": "15:30",
+            "confirm_date": "2024-01-04",
+            "action": "buy",
+            "amount_cny": "1000",
+            "share": "500",
+            "nav": "2.0",
+            "fee": "0",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with Session(app.db.engine) as session:
+        candidate = session.get(FundTransactionCandidate, candidate_id)
+        assert candidate.trade_date == date(2024, 1, 3)
+        assert candidate.confirm_date == date(2024, 1, 4)
+
+
 async def test_fund_rule_controls_t_plus_confirm_date(client):
     import app.db
     from app.models import FundNav
