@@ -66,10 +66,10 @@
         <span class="badge">买入费率 {{ "%.4f"|format(rule.buy_fee_rate) }}</span>
         {% if rule.sync_source %}<span class="badge">{{ rule.sync_source }}</span>{% endif %}
       </div>
-      <button class="btn small" type="button" onclick="var d=this.closest('section').querySelector('.rule-detail');d.classList.toggle('hidden');this.textContent=d.classList.contains('hidden')?'展开':'收起'">展开</button>
+      <button class="btn small" type="button" onclick="var d=this.parentElement.parentElement.querySelector('.rule-detail');if(d.style.display==='none'||!d.style.display){d.style.display='block';this.textContent='收起'}else{d.style.display='none';this.textContent='展开'}">展开</button>
     </div>
     {% if rule.notes %}<p class="muted" style="margin:4px 0 0">{{ rule.notes }}</p>{% endif %}
-    <div class="rule-detail hidden stack" style="margin-top:12px;">
+    <div class="rule-detail stack" style="display:none;margin-top:12px;">
       <form method="post" action="/fund-rules/sync">
         <input type="hidden" name="fund_code" value="{{ rule.fund_code }}">
         <button class="btn" type="submit">重新同步</button>

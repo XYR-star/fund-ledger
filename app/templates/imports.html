@@ -12,6 +12,7 @@
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
+<div id="import-table" hx-get="/imports" hx-trigger="every 3s" hx-swap="outerHTML" hx-select="#import-table">
 <div class="table-wrap">
   <table>
     <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>文本长度</th><th>更新时间</th><th>操作</th></tr></thead>
@@ -46,5 +47,6 @@
       {% endfor %}
     </tbody>
   </table>
+</div>
 </div>
 {% endblock %}

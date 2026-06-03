@@ -105,6 +105,9 @@ def create_candidates_from_text(
     known_names = known_fund_names(session)
     for item in extracted:
         fund_code = item.fund_code.zfill(6)
+        if _is_etf_text(item.raw_text) or _is_etf_text(item.fund_name):
+            warnings.append(f"跳过 ETF 基金 {item.fund_name}")
+            continue
         if fund_code == "000000" and item.fund_name:
             resolved = _resolve_fund_code(session, item.fund_name, known_names, llm_cache, warnings)
             if resolved:
@@ -208,6 +211,9 @@ def create_inferred_candidates_from_minimal_text(
         status = infer_candidate_status(text)
         fund_code = extract_fund_code(text)
         fund_name = extract_fund_name(text, fund_code, known_names)
+        if _is_etf_text(text) or _is_etf_text(fund_name):
+            warnings.append(f"跳过 ETF 基金 {fund_name or text[:40]}")
+            continue
         if not fund_code and fund_name in known_names:
             fund_code = known_names[fund_name]
         if not fund_code or fund_code == "000000":
@@ -284,14 +290,20 @@ def is_etf_fund(session: Session, fund_code: str) -> bool:
     if fund_code == "000000":
         return False
     rule = get_fund_rule(session, fund_code)
-    if not rule or not rule.fund_type:
+    if not rule:
         return False
-    ft = rule.fund_type
-    if "ETF" not in ft and "场内" not in ft:
-        return False
-    if "联接" in ft or "连接" in ft:
-        return False
-    return True
+    if rule.fund_type and ("ETF" in rule.fund_type or "场内" in rule.fund_type):
+        if "联接" not in rule.fund_type and "连接" not in rule.fund_type:
+            return True
+    name = rule.fund_name
+    if name and "ETF" in name.upper() and "联接" not in name and "连接" not in name:
+        return True
+    return False
+
+
+def _is_etf_text(text: str) -> bool:
+    upper = text.upper()
+    return "ETF" in upper and "联接" not in text and "连接" not in text
 
 
 def is_money_fund(session: Session, fund_code: str) -> bool:
@@ -566,6 +578,9 @@ def create_candidates_from_rows(
         if not trade_date or not fund_code.isdigit() or len(fund_code) != 6:
             continue
         fund_name = str(row.get("fund_name") or "")
+        if _is_etf_text(fund_name) or _is_etf_text(str(row)):
+            warnings.append(f"跳过 ETF 基金 {fund_name}")
+            continue
         if fund_code == "000000" and fund_name:
             resolved = _resolve_fund_code(session, fund_name, known_names, llm_cache, warnings)
             if resolved:
@@ -759,12 +774,6 @@ def process_auto_import_job(payload: dict[str, Any]) -> str:
         session.commit()
 
         fund_codes = fund_codes_for_source(session, document.source_hash)
-        sync_errors = sync_related_market_data(session, fund_codes)
-        if sync_errors:
-            document.error_message = "\n".join(sync_errors)
-            document.updated_at = datetime.utcnow()
-            session.add(document)
-            session.commit()
         messages.append(f"候选 {parsed_count} 条")
         if fund_codes:
             messages.append(f"基金 {', '.join(sorted(fund_codes))}")

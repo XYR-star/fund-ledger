@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}导入 #{{ document.id }} - Fund Ledger{% endblock %}
 {% block content %}
+<div id="import-detail-content" hx-get="/imports/{{ document.id }}" hx-trigger="every 3s" hx-swap="outerHTML" hx-select="#import-detail-content">
 <div class="page-title">
   <div>
     <h1>导入 #{{ document.id }}</h1>
@@ -84,4 +85,5 @@
     </div>
   </form>
 </section>
+</div>
 {% endblock %}
