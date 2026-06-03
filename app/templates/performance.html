@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}收益曲线 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>收益曲线</h1>
+    <p class="muted">每只基金按首个净值日归一化展示，沪深300为虚线基准，圆点为买入或红利再投。</p>
+  </div>
+  <div class="actions">
+    <form method="post" action="/performance/benchmark/sync">
+      <button class="btn" type="submit">同步沪深300</button>
+    </form>
+    <a class="btn" href="/nav">同步基金净值</a>
+  </div>
+</div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+
+<section class="panel stack">
+  <h2>基准状态</h2>
+  <p class="muted">沪深300{% if latest_benchmark %} 最近数据日 {{ latest_benchmark.nav_date }}，收盘 {{ "%.2f"|format(latest_benchmark.close_value) }}{% else %} 尚未同步。先同步后即可显示虚线基准。{% endif %}</p>
+  {% if jobs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>状态</th><th>结果</th><th>时间</th></tr></thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>{{ job.id }}</td>
+          <td><span class="badge">{{ job.status.value }}</span></td>
+          <td>{{ job.result_message or job.error_message or "-" }}</td>
+          <td>{{ job.finished_at or job.started_at or job.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<div class="chart-grid">
+  {% for chart in charts %}
+  <section class="panel chart-card">
+    <div class="chart-head">
+      <div>
+        <h2>{{ chart.fund_code }} {{ chart.fund_name or "" }}</h2>
+        <p class="muted">{{ chart.start_date }} 至 {{ chart.end_date }}</p>
+      </div>
+      <div class="chart-metrics">
+        <span class="badge">基金 {{ format_return(chart.latest_return) }}</span>
+        <span class="badge">沪深300 {{ format_return(chart.benchmark_return) }}</span>
+        <span class="badge">超额 {{ format_return(chart.excess_return) }}</span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <svg class="performance-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="{{ chart.fund_code }} 收益曲线">
+        {% for tick in chart.y_ticks %}
+        <line class="chart-grid-line" x1="0" y1="{{ tick.y }}" x2="100" y2="{{ tick.y }}"/>
+        {% endfor %}
+        {% if chart.benchmark_path %}<path class="chart-line benchmark-line" d="{{ chart.benchmark_path }}"/>{% endif %}
+        <path class="chart-line fund-line" d="{{ chart.svg_path }}"/>
+        {% for marker in chart.marker_positions %}
+        <circle class="buy-marker" cx="{{ marker.x }}" cy="{{ marker.y }}" r="1.6">
+          <title>{{ marker.date }} 买入 ¥{{ "%.2f"|format(marker.amount) }}</title>
+        </circle>
+        {% endfor %}
+      </svg>
+      <div class="chart-axis">
+        {% for tick in chart.y_ticks %}
+        <span style="top: {{ tick.y }}%">{{ tick.label }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="chart-legend">
+      <span><i class="legend-line fund"></i>基金</span>
+      <span><i class="legend-line benchmark"></i>沪深300</span>
+      <span><i class="legend-dot"></i>买入点</span>
+    </div>
+    {% if chart.buy_markers %}
+    <div class="buy-list">
+      {% for marker in chart.buy_markers %}
+      <span class="badge">{{ marker.date }} 买入 ¥{{ "%.2f"|format(marker.amount) }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+  {% else %}
+  <section class="panel muted">暂无可绘制曲线。需要先确认交易，并同步对应基金净值；沪深300虚线需要点击“同步沪深300”。</section>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -131,6 +131,19 @@ class FundNav(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class BenchmarkNav(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("benchmark_code", "nav_date"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    benchmark_code: str = Field(index=True, max_length=32)
+    benchmark_name: str = ""
+    nav_date: date = Field(index=True)
+    close_value: float
+    source: str = "akshare"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class BackgroundJob(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     job_type: str = Field(index=True)

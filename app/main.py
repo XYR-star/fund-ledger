@@ -20,6 +20,7 @@ from .jobs import create_and_enqueue, recover_interrupted_jobs, register_job
 from .llm import is_deepseek_configured, parse_with_deepseek
 from .models import (
     BackgroundJob,
+    BenchmarkNav,
     CandidateStatus,
     AppSetting,
     FundFeeTier,
@@ -33,6 +34,7 @@ from .models import (
 )
 from .nav import sync_nav_for_fund
 from .ocr import recognize_file
+from .performance import build_performance_charts, format_return, sync_hs300
 from .portfolio import calculate_holdings, xalpha_rows
 from .templates import templates
 
@@ -53,6 +55,7 @@ def register_background_jobs() -> None:
     register_job("ocr_import", process_ocr_job)
     register_job("parse_import", process_parse_job)
     register_job("sync_nav", process_nav_job)
+    register_job("sync_benchmark", process_benchmark_job)
     register_job("sync_fund_rule", process_fund_rule_sync_job)
 
 
@@ -508,6 +511,14 @@ def process_nav_job(payload: dict[str, Any]) -> str:
         return f"{fund_code} 净值同步完成，新增 {inserted} 条"
 
 
+def process_benchmark_job(payload: dict[str, Any]) -> str:
+    with Session(engine) as session:
+        inserted, error = sync_hs300(session)
+        if error:
+            raise RuntimeError(error)
+        return f"沪深300同步完成，新增 {inserted} 条"
+
+
 def process_fund_rule_sync_job(payload: dict[str, Any]) -> str:
     code = str(payload["fund_code"]).zfill(6)
     synced = fetch_fund_rule_from_akshare(code)
@@ -556,6 +567,7 @@ def backup_counts(payload: dict[str, Any]) -> dict[str, int]:
             "nav",
             "fund_rules",
             "fund_fee_tiers",
+            "benchmark_nav",
             "settings",
         )
     }
@@ -626,6 +638,22 @@ def restore_backup_payload(session: Session, payload: dict[str, Any]) -> dict[st
         else:
             session.add(FundNav(**_model_data(item, {"nav_date", "created_at", "updated_at"})))
         counts["nav"] += 1
+
+    for item in payload.get("benchmark_nav") or []:
+        nav_date = parse_date_value(item.get("nav_date"))
+        existing = session.exec(
+            select(BenchmarkNav).where(
+                BenchmarkNav.benchmark_code == item.get("benchmark_code"),
+                BenchmarkNav.nav_date == nav_date,
+            )
+        ).first()
+        if existing:
+            _apply_fields(existing, item, {"id", "benchmark_code", "nav_date", "created_at"})
+            existing.updated_at = datetime.utcnow()
+            session.add(existing)
+        else:
+            session.add(BenchmarkNav(**_model_data(item, {"nav_date", "created_at", "updated_at"})))
+        counts["benchmark_nav"] += 1
 
     session.commit()
     return counts
@@ -1237,6 +1265,47 @@ def holdings_page(
     )
 
 
+@app.get("/performance", response_class=HTMLResponse)
+def performance_page(
+    request: Request,
+    message: str = "",
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    charts = build_performance_charts(session)
+    latest_benchmark = session.exec(
+        select(BenchmarkNav)
+        .where(BenchmarkNav.benchmark_code == "000300")
+        .order_by(desc(BenchmarkNav.nav_date))
+    ).first()
+    jobs = session.exec(
+        select(BackgroundJob)
+        .where(BackgroundJob.job_type == "sync_benchmark")
+        .order_by(desc(BackgroundJob.created_at))
+        .limit(5)
+    ).all()
+    return templates.TemplateResponse(
+        "performance.html",
+        {
+            "request": request,
+            "message": message,
+            "charts": charts,
+            "latest_benchmark": latest_benchmark,
+            "jobs": jobs,
+            "format_return": format_return,
+        },
+    )
+
+
+@app.post("/performance/benchmark/sync")
+def performance_benchmark_sync(
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    job = create_and_enqueue(session, "sync_benchmark", {})
+    return redirect(f"/performance?message=沪深300同步已加入后台任务 #{job.id}")
+
+
 @app.get("/nav", response_class=HTMLResponse)
 def nav_page(
     request: Request,
@@ -1368,6 +1437,10 @@ def backup_export(
         "nav": [
             serialize_model(item)
             for item in session.exec(select(FundNav).order_by(FundNav.fund_code, FundNav.nav_date)).all()
+        ],
+        "benchmark_nav": [
+            serialize_model(item)
+            for item in session.exec(select(BenchmarkNav).order_by(BenchmarkNav.benchmark_code, BenchmarkNav.nav_date)).all()
         ],
     }
     response = JSONResponse(payload)

@@ -35,6 +35,26 @@ def migrate_schema() -> None:
             connection.execute(text("ALTER TABLE fundrule ADD COLUMN sync_source TEXT DEFAULT ''"))
         if "synced_at" not in columns:
             connection.execute(text("ALTER TABLE fundrule ADD COLUMN synced_at TIMESTAMP"))
+        if "benchmarknav" not in tables:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE benchmarknav (
+                        id INTEGER PRIMARY KEY,
+                        benchmark_code VARCHAR(32) NOT NULL,
+                        benchmark_name VARCHAR NOT NULL DEFAULT '',
+                        nav_date DATE NOT NULL,
+                        close_value FLOAT NOT NULL,
+                        source VARCHAR NOT NULL DEFAULT 'akshare',
+                        created_at TIMESTAMP NOT NULL,
+                        updated_at TIMESTAMP NOT NULL,
+                        UNIQUE (benchmark_code, nav_date)
+                    )
+                    """
+                )
+            )
+            connection.execute(text("CREATE INDEX ix_benchmarknav_benchmark_code ON benchmarknav (benchmark_code)"))
+            connection.execute(text("CREATE INDEX ix_benchmarknav_nav_date ON benchmarknav (nav_date)"))
 
 
 def get_session() -> Generator[Session, None, None]:

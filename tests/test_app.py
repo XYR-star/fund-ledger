@@ -141,13 +141,69 @@ async def test_holdings_calculation_without_synced_nav(client):
     assert "¥500.00" in page.text
 
 
+async def test_performance_page_draws_fund_and_benchmark_curves(client):
+    import app.db
+    from app.models import BenchmarkNav, FundNav
+
+    await login(client)
+    await client.post(
+        "/upload",
+        data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
+        follow_redirects=False,
+    )
+    await client.post("/candidates/1/confirm", follow_redirects=False)
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 3), unit_nav=2.2))
+        session.add(
+            BenchmarkNav(
+                benchmark_code="000300",
+                benchmark_name="沪深300",
+                nav_date=date(2024, 1, 2),
+                close_value=3300,
+            )
+        )
+        session.add(
+            BenchmarkNav(
+                benchmark_code="000300",
+                benchmark_name="沪深300",
+                nav_date=date(2024, 1, 3),
+                close_value=3366,
+            )
+        )
+        session.commit()
+
+    page = await client.get("/performance")
+    assert page.status_code == 200
+    assert "收益曲线" in page.text
+    assert "005827" in page.text
+    assert "沪深300" in page.text
+    assert "fund-line" in page.text
+    assert "benchmark-line" in page.text
+    assert "buy-marker" in page.text
+    assert "10.0%" in page.text
+
+
 async def test_backup_export(client):
     await login(client)
+    import app.db
+    from app.models import BenchmarkNav
+
     await client.post(
         "/upload",
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
     )
     await client.post("/candidates/1/confirm", follow_redirects=False)
+    with Session(app.db.engine) as session:
+        session.add(
+            BenchmarkNav(
+                benchmark_code="000300",
+                benchmark_name="沪深300",
+                nav_date=date(2024, 1, 2),
+                close_value=3300,
+            )
+        )
+        session.commit()
     response = await client.get("/backup/export")
     assert response.status_code == 200
     assert response.headers["content-disposition"].startswith("attachment;")
@@ -157,6 +213,7 @@ async def test_backup_export(client):
     assert data["imports"][0]["raw_text"]
     assert "fund_rules" in data
     assert "fund_fee_tiers" in data
+    assert data["benchmark_nav"][0]["benchmark_code"] == "000300"
 
 
 async def test_ocr_import_to_candidate_flow(client, monkeypatch):
