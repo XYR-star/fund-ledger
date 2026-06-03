@@ -21,6 +21,7 @@
       <label>代码<input name="fund_code" value="{{ c.fund_code }}" required></label>
       <label>名称<input name="fund_name" value="{{ c.fund_name }}"></label>
       <label>交易日<input type="date" name="trade_date" value="{{ c.trade_date }}" required></label>
+      <label>提交时间<input type="time" name="submitted_at" value="{{ c.submitted_at.strftime('%H:%M') if c.submitted_at else '' }}"></label>
       <label>确认日<input type="date" name="confirm_date" value="{{ c.confirm_date or '' }}"></label>
       <label>动作
         <select name="action">

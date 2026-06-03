@@ -35,6 +35,18 @@ def migrate_schema() -> None:
             connection.execute(text("ALTER TABLE fundrule ADD COLUMN sync_source TEXT DEFAULT ''"))
         if "synced_at" not in columns:
             connection.execute(text("ALTER TABLE fundrule ADD COLUMN synced_at TIMESTAMP"))
+        if "fundtransactioncandidate" in tables:
+            candidate_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(fundtransactioncandidate)"))
+            }
+            if "submitted_at" not in candidate_columns:
+                connection.execute(text("ALTER TABLE fundtransactioncandidate ADD COLUMN submitted_at TIME"))
+        if "fundtransaction" in tables:
+            transaction_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(fundtransaction)"))
+            }
+            if "submitted_at" not in transaction_columns:
+                connection.execute(text("ALTER TABLE fundtransaction ADD COLUMN submitted_at TIME"))
         if "benchmarknav" not in tables:
             connection.execute(
                 text(

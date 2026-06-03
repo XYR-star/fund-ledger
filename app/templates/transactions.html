@@ -9,11 +9,12 @@
 </div>
 <div class="table-wrap">
   <table>
-    <thead><tr><th>交易日</th><th>代码</th><th>名称</th><th>动作</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th></tr></thead>
+    <thead><tr><th>交易日</th><th>提交时间</th><th>代码</th><th>名称</th><th>动作</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th></tr></thead>
     <tbody>
       {% for t in transactions %}
       <tr>
         <td>{{ t.trade_date }}</td>
+        <td>{% if t.submitted_at %}{{ t.submitted_at.strftime('%H:%M') }}{% else %}-{% endif %}</td>
         <td>{{ t.fund_code }}</td>
         <td>{{ t.fund_name or "-" }}</td>
         <td>{{ t.action.value }}</td>
@@ -23,7 +24,7 @@
         <td>{% if t.fee is not none %}¥{{ "%.2f"|format(t.fee) }}{% else %}-{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="8" class="muted">暂无正式流水。</td></tr>
+      <tr><td colspan="9" class="muted">暂无正式流水。</td></tr>
       {% endfor %}
     </tbody>
   </table>

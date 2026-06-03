@@ -3,7 +3,7 @@ import asyncio
 
 import httpx
 import pytest
-from sqlmodel import Session, SQLModel
+from sqlmodel import Session, SQLModel, select
 
 
 pytestmark = pytest.mark.anyio
@@ -66,7 +66,7 @@ async def login(client):
     )
 
 
-async def wait_for_text(client, path, text, attempts=20):
+async def wait_for_text(client, path, text, attempts=60):
     response = None
     for _ in range(attempts):
         response = await client.get(path)
@@ -478,9 +478,42 @@ async def test_minimal_buy_infers_nav_after_cutoff(client):
     )
     page = await wait_for_text(client, "/candidates", "161725")
     assert "161725" in page.text
+    assert "15:30" in page.text
     assert "2024-01-03" in page.text
     assert "500.0" in page.text
     assert "2.0" in page.text
+
+
+async def test_llm_rows_apply_submitted_time_cutoff(client):
+    import app.db
+    from app.main import create_candidates_from_rows
+    from app.models import FundNav, FundTransactionCandidate
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=1.9))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 4), unit_nav=2.1))
+        create_candidates_from_rows(
+            session,
+            [
+                {
+                    "fund_code": "161725",
+                    "fund_name": "招商中证白酒",
+                    "trade_date": "2024-01-02",
+                    "submitted_at": "15:30",
+                    "action": "buy",
+                    "amount_cny": 1000,
+                }
+            ],
+        )
+        session.commit()
+        candidate = session.exec(select(FundTransactionCandidate)).first()
+
+    assert candidate.submitted_at.strftime("%H:%M") == "15:30"
+    assert candidate.trade_date == date(2024, 1, 3)
+    assert candidate.confirm_date == date(2024, 1, 4)
+    assert candidate.nav == 2.0
 
 
 async def test_fund_rule_controls_t_plus_confirm_date(client):

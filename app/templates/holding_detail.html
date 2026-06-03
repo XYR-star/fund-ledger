@@ -83,11 +83,12 @@
   <h2>交易流水</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>交易日</th><th>确认日</th><th>操作</th><th>金额</th><th>份额</th><th>净值</th><th>手续费</th><th>来源</th></tr></thead>
+      <thead><tr><th>交易日</th><th>提交时间</th><th>确认日</th><th>操作</th><th>金额</th><th>份额</th><th>净值</th><th>手续费</th><th>来源</th></tr></thead>
       <tbody>
         {% for tx in transactions %}
         <tr>
           <td>{{ tx.trade_date }}</td>
+          <td>{% if tx.submitted_at %}{{ tx.submitted_at.strftime('%H:%M') }}{% else %}-{% endif %}</td>
           <td>{{ tx.confirm_date or "-" }}</td>
           <td><span class="badge">{{ tx.action.value }}</span></td>
           <td>{% if tx.amount_cny is not none %}¥{{ "%.2f"|format(tx.amount_cny) }}{% else %}-{% endif %}</td>

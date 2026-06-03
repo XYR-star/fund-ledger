@@ -76,6 +76,8 @@ def serialize_model(model):
     for key, value in data.items():
         if isinstance(value, (date, datetime)):
             data[key] = value.isoformat()
+        elif isinstance(value, time):
+            data[key] = value.strftime("%H:%M")
         elif hasattr(value, "value"):
             data[key] = value.value
     return data
@@ -101,6 +103,7 @@ def create_candidates_from_text(
                 fund_code=item.fund_code,
                 fund_name=item.fund_name,
                 trade_date=item.trade_date,
+                submitted_at=None,
                 confirm_date=item.confirm_date,
                 action=item.action,
                 amount_cny=item.amount_cny,
@@ -165,6 +168,7 @@ def create_inferred_candidates_from_minimal_text(
                 fund_code=fund_code,
                 fund_name=fund_name,
                 trade_date=nav_item.nav_date if nav_item else trade_day,
+                submitted_at=submitted_at,
                 confirm_date=confirm_date,
                 action=action,
                 amount_cny=amount if action != TransactionAction.sell else None,
@@ -303,6 +307,20 @@ def parse_time_value(value: str) -> time:
         return time(15, 0)
 
 
+def parse_optional_time_value(value: Any) -> time | None:
+    if value in (None, "", "-", "null"):
+        return None
+    if isinstance(value, time):
+        return value
+    match = re.search(r"(\d{1,2}):(\d{2})", str(value).strip())
+    if not match:
+        return None
+    try:
+        return time(int(match.group(1)), int(match.group(2)))
+    except ValueError:
+        return None
+
+
 def infer_redemption_fee(
     session: Session,
     fund_code: str,
@@ -380,15 +398,30 @@ def create_candidates_from_rows(
             action = TransactionAction(str(row.get("action") or TransactionAction.buy.value))
         except ValueError:
             action = TransactionAction.buy
+        submitted_at = parse_optional_time_value(
+            row.get("submitted_at") or row.get("submitted_time") or row.get("trade_time")
+        )
+        rule = get_fund_rule(session, fund_code)
+        effective_nav = find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
+        effective_trade_date = effective_nav.nav_date if effective_nav else trade_date
+        confirm_date = parse_date_value(row.get("confirm_date"))
+        if confirm_date is None and effective_nav:
+            confirm_date = find_nth_nav_date(
+                session,
+                fund_code,
+                effective_nav.nav_date,
+                rule.buy_confirm_days if action == TransactionAction.buy else rule.sell_confirm_days,
+            )
         candidate = FundTransactionCandidate(
             fund_code=fund_code,
             fund_name=str(row.get("fund_name") or ""),
-            trade_date=trade_date,
-            confirm_date=parse_date_value(row.get("confirm_date")),
+            trade_date=effective_trade_date,
+            submitted_at=submitted_at,
+            confirm_date=confirm_date,
             action=action,
             amount_cny=parse_float_value(row.get("amount_cny")),
             share=parse_float_value(row.get("share")),
-            nav=parse_float_value(row.get("nav")),
+            nav=parse_float_value(row.get("nav")) or (effective_nav.unit_nav if effective_nav else None),
             fee=parse_float_value(row.get("fee")),
             source_file=source_file,
             source_hash=source_hash,
@@ -754,14 +787,14 @@ def restore_backup_payload(session: Session, payload: dict[str, Any]) -> dict[st
         existing = session.get(FundTransactionCandidate, item.get("id"))
         if existing:
             continue
-        session.add(FundTransactionCandidate(**_model_data(item, {"trade_date", "confirm_date", "created_at", "updated_at"})))
+        session.add(FundTransactionCandidate(**_model_data(item, {"trade_date", "submitted_at", "confirm_date", "created_at", "updated_at"})))
         counts["candidates"] += 1
 
     for item in payload.get("transactions") or []:
         existing = session.get(FundTransaction, item.get("id"))
         if existing:
             continue
-        session.add(FundTransaction(**_model_data(item, {"trade_date", "confirm_date", "created_at"})))
+        session.add(FundTransaction(**_model_data(item, {"trade_date", "submitted_at", "confirm_date", "created_at"})))
         counts["transactions"] += 1
 
     for item in payload.get("fund_fee_tiers") or []:
@@ -812,7 +845,9 @@ def _model_data(item: dict[str, Any], typed_fields: set[str]) -> dict[str, Any]:
     for key in typed_fields:
         if key not in data:
             continue
-        if key.endswith("_date") or key == "nav_date":
+        if key == "submitted_at":
+            data[key] = parse_optional_time_value(data[key])
+        elif key.endswith("_date") or key == "nav_date":
             data[key] = parse_date_value(data[key])
         else:
             data[key] = _parse_datetime_value(data[key])
@@ -823,7 +858,9 @@ def _apply_fields(model: Any, item: dict[str, Any], skip: set[str]) -> None:
     for key, value in item.items():
         if key in skip or not hasattr(model, key):
             continue
-        if key.endswith("_date") or key == "nav_date":
+        if key == "submitted_at":
+            value = parse_optional_time_value(value)
+        elif key.endswith("_date") or key == "nav_date":
             value = parse_date_value(value)
         elif key.endswith("_at"):
             value = _parse_datetime_value(value)
@@ -1343,6 +1380,7 @@ def candidate_update(
     fund_code: str = Form(...),
     fund_name: str = Form(""),
     trade_date: date = Form(...),
+    submitted_at: Optional[time] = Form(None),
     confirm_date: Optional[date] = Form(None),
     action: TransactionAction = Form(...),
     amount_cny: Optional[float] = Form(None),
@@ -1358,6 +1396,7 @@ def candidate_update(
     candidate.fund_code = fund_code.zfill(6)
     candidate.fund_name = fund_name
     candidate.trade_date = trade_date
+    candidate.submitted_at = submitted_at
     candidate.confirm_date = confirm_date
     candidate.action = action
     candidate.amount_cny = amount_cny
@@ -1386,6 +1425,7 @@ def candidate_confirm(
         fund_code=candidate.fund_code,
         fund_name=candidate.fund_name,
         trade_date=candidate.trade_date,
+        submitted_at=candidate.submitted_at,
         confirm_date=candidate.confirm_date,
         action=candidate.action,
         amount_cny=candidate.amount_cny,

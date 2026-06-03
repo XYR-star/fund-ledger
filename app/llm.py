@@ -24,9 +24,10 @@ def parse_with_deepseek(raw_text: str, config: dict[str, str] | None = None) -> 
     model = _value(config, "DEEPSEEK_MODEL", "deepseek-chat")
     prompt = (
         "请从下面的中国场外基金交易记录文本中提取交易，"
-        "只返回 JSON 数组。字段为 fund_code, fund_name, trade_date, confirm_date, "
+        "只返回 JSON 数组。字段为 fund_code, fund_name, trade_date, submitted_at, confirm_date, "
         "action, amount_cny, share, nav, fee。action 只能是 buy, sell, dividend, "
-        "dividend_reinvest, fee_adjustment。无法确定的字段用 null。\n\n"
+        "dividend_reinvest, fee_adjustment。submitted_at 为提交时间，格式 HH:MM；"
+        "如果文本里没有明确时间则用 null。无法确定的字段用 null。\n\n"
         f"{raw_text}"
     )
     response = requests.post(

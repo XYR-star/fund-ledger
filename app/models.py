@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import Enum
 from typing import Optional
 
@@ -85,6 +85,7 @@ class FundTransactionCandidate(SQLModel, table=True):
     fund_code: str = Field(index=True, max_length=6)
     fund_name: str = ""
     trade_date: date
+    submitted_at: Optional[time] = None
     confirm_date: Optional[date] = None
     action: TransactionAction = Field(default=TransactionAction.buy)
     amount_cny: Optional[float] = None
@@ -106,6 +107,7 @@ class FundTransaction(SQLModel, table=True):
     fund_code: str = Field(index=True, max_length=6)
     fund_name: str = ""
     trade_date: date = Field(index=True)
+    submitted_at: Optional[time] = None
     confirm_date: Optional[date] = None
     action: TransactionAction = Field(default=TransactionAction.buy)
     amount_cny: Optional[float] = None
