@@ -31,11 +31,26 @@ async def client(tmp_path, monkeypatch):
     import app.config
     import app.db
     import app.main
+    from app.fund_rule_sync import SyncedRule
 
     importlib.reload(app.config)
     importlib.reload(app.db)
     importlib.reload(app.main)
     monkeypatch.setattr(app.main, "sync_nav_for_fund", lambda *_: (0, "offline"))
+    monkeypatch.setattr(app.main, "sync_hs300", lambda *_: (0, None))
+    monkeypatch.setattr(
+        app.main,
+        "fetch_fund_rule_from_akshare",
+        lambda code: SyncedRule(
+            fund_code=code,
+            fund_name="",
+            buy_confirm_days=1,
+            sell_confirm_days=1,
+            buy_fee_rate=0.0,
+            fee_tiers=[],
+            source="test",
+        ),
+    )
     SQLModel.metadata.drop_all(app.db.engine)
     SQLModel.metadata.create_all(app.db.engine)
     transport = httpx.ASGITransport(app=app.main.app)
@@ -101,7 +116,7 @@ async def test_candidate_confirm_flow(client):
     )
     assert response.status_code == 303
 
-    page = await client.get("/candidates")
+    page = await wait_for_text(client, "/candidates", "161725")
     assert "161725" in page.text
     assert "pending" in page.text
 
@@ -123,6 +138,7 @@ async def test_ignore_candidate_does_not_create_transaction(client):
         "/upload",
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 - 2.0000 0"},
     )
+    await wait_for_text(client, "/candidates", "005827")
     await client.post("/candidates/1/ignore", follow_redirects=False)
     tx_page = await client.get("/transactions")
     assert "易方达蓝筹" not in tx_page.text
@@ -134,6 +150,7 @@ async def test_holdings_calculation_without_synced_nav(client):
         "/upload",
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
     )
+    await wait_for_text(client, "/candidates", "005827")
     await client.post("/candidates/1/confirm", follow_redirects=False)
     page = await client.get("/holdings")
     assert "005827" in page.text
@@ -151,6 +168,7 @@ async def test_performance_page_draws_fund_and_benchmark_curves(client):
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
         follow_redirects=False,
     )
+    await wait_for_text(client, "/candidates", "005827")
     await client.post("/candidates/1/confirm", follow_redirects=False)
     with Session(app.db.engine) as session:
         session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=2.0))
@@ -193,6 +211,7 @@ async def test_backup_export(client):
         "/upload",
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
     )
+    await wait_for_text(client, "/candidates", "005827")
     await client.post("/candidates/1/confirm", follow_redirects=False)
     with Session(app.db.engine) as session:
         session.add(
@@ -235,18 +254,48 @@ async def test_ocr_import_to_candidate_flow(client, monkeypatch):
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert response.headers["location"] == "/imports/1"
-
-    response = await client.post("/imports/1/ocr", follow_redirects=False)
-    assert response.status_code == 303
+    assert response.headers["location"].startswith("/imports/1")
     detail = await wait_for_text(client, "/imports/1", "招商中证白酒")
     assert "招商中证白酒" in detail.text
 
-    response = await client.post("/imports/1/parse", follow_redirects=False)
-    assert response.status_code == 303
     page = await wait_for_text(client, "/candidates", "161725")
     assert "161725" in page.text
     assert "pending" in page.text
+
+
+async def test_batch_upload_auto_imports_multiple_files(client, monkeypatch):
+    import app.main
+    from app.ocr import OcrResult
+
+    await login(client)
+
+    def fake_ocr(path, *_):
+        text = (
+            "2024-01-02 161725 招商中证白酒 buy 1000 500 2.0000 0"
+            if "one" in str(path)
+            else "2024-01-03 005827 易方达蓝筹 buy 500 250 2.0000 0"
+        )
+        return OcrResult(text=text, confidence=0.99)
+
+    monkeypatch.setattr(app.main, "recognize_file", fake_ocr)
+    response = await client.post(
+        "/upload",
+        files=[
+            ("files", ("one.png", b"fake image 1", "image/png")),
+            ("files", ("two.png", b"fake image 2", "image/png")),
+        ],
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/imports?message=")
+
+    imports = await wait_for_text(client, "/imports", "two.png")
+    assert "one.png" in imports.text
+    assert "two.png" in imports.text
+
+    page = await wait_for_text(client, "/candidates", "005827")
+    assert "161725" in page.text
+    assert "005827" in page.text
 
 
 async def test_settings_page_saves_runtime_config(client):
@@ -290,6 +339,7 @@ async def test_import_archive_delete_restore(client):
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 250 2.0000 0"},
         follow_redirects=False,
     )
+    await wait_for_text(client, "/imports/1", "parse_done")
     response = await client.post("/imports/1/archive", follow_redirects=False)
     assert response.status_code == 303
     page = await client.get("/imports")
@@ -323,7 +373,7 @@ async def test_minimal_buy_infers_nav_after_cutoff(client):
         data={"raw_text": "2024-01-02 15:30 161725 招商中证白酒 买入 1000元"},
         follow_redirects=False,
     )
-    page = await client.get("/candidates")
+    page = await wait_for_text(client, "/candidates", "161725")
     assert "161725" in page.text
     assert "2024-01-03" in page.text
     assert "500.0" in page.text
@@ -360,7 +410,7 @@ async def test_fund_rule_controls_t_plus_confirm_date(client):
         data={"raw_text": "2024-01-02 14:30 161725 招商中证白酒 买入 1000元"},
         follow_redirects=False,
     )
-    page = await client.get("/candidates")
+    page = await wait_for_text(client, "/candidates", "2024-01-04")
     assert "2024-01-02" in page.text
     assert "2024-01-04" in page.text
 
@@ -403,13 +453,14 @@ async def test_sell_fee_uses_fifo_fee_tiers(client):
         data={"raw_text": "2024-01-02 10:00 161725 招商中证白酒 买入 1000元"},
         follow_redirects=False,
     )
+    await wait_for_text(client, "/candidates", "161725")
     await client.post("/candidates/1/confirm", follow_redirects=False)
     await client.post(
         "/upload",
         data={"raw_text": "2024-01-03 10:00 161725 招商中证白酒 赎回 100份"},
         follow_redirects=False,
     )
-    page = await client.get("/candidates")
+    page = await wait_for_text(client, "/candidates", "3.0")
     assert "3.0" in page.text
 
 
@@ -496,5 +547,5 @@ async def test_failed_minimal_order_is_ignored(client):
         data={"raw_text": "2024-01-02 10:00 161725 招商中证白酒 买入 1000元 交易失败"},
         follow_redirects=False,
     )
-    page = await client.get("/candidates")
+    page = await wait_for_text(client, "/candidates", "ignored")
     assert "ignored" in page.text

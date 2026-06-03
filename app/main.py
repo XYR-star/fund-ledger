@@ -52,6 +52,7 @@ def on_startup() -> None:
 
 
 def register_background_jobs() -> None:
+    register_job("auto_import", process_auto_import_job)
     register_job("ocr_import", process_ocr_job)
     register_job("parse_import", process_parse_job)
     register_job("sync_nav", process_nav_job)
@@ -464,6 +465,93 @@ def process_ocr_job(payload: dict[str, Any]) -> str:
         return f"OCR 完成，识别 {len(result.text)} 个字符"
 
 
+def process_auto_import_job(payload: dict[str, Any]) -> str:
+    document_id = int(payload["document_id"])
+    messages = []
+    parsed_count = 0
+    with Session(engine) as session:
+        document = session.get(ImportDocument, document_id)
+        if not document:
+            raise RuntimeError("导入文档不存在")
+        config = runtime_settings(session)
+        document.error_message = ""
+        document.updated_at = datetime.utcnow()
+        session.add(document)
+        session.commit()
+
+        if document.source_file:
+            document.status = ImportStatus.ocr_running
+            document.updated_at = datetime.utcnow()
+            session.add(document)
+            session.commit()
+            try:
+                result = recognize_file(document.source_file, config)
+            except Exception as exc:
+                document.status = ImportStatus.error
+                document.error_message = f"OCR 失败：{exc}"
+                document.updated_at = datetime.utcnow()
+                session.add(document)
+                session.commit()
+                raise
+            document.ocr_text = result.text
+            document.status = ImportStatus.ocr_done
+            document.updated_at = datetime.utcnow()
+            session.add(document)
+            session.commit()
+            messages.append(f"OCR {len(result.text)} 字")
+
+        text = document.ocr_text or document.raw_text
+        if not text.strip():
+            document.status = ImportStatus.error
+            document.error_message = "OCR 后没有可解析文本"
+            document.updated_at = datetime.utcnow()
+            session.add(document)
+            session.commit()
+            raise RuntimeError(document.error_message)
+
+        if is_deepseek_configured(config):
+            try:
+                llm_result = parse_with_deepseek(text, config)
+            except Exception as exc:
+                messages.append(f"DeepSeek 解析失败，已回退规则解析：{exc}")
+            else:
+                if llm_result and llm_result.parsed_json:
+                    document.ocr_text = llm_result.raw_response
+                    parsed_count = create_candidates_from_rows(
+                        session,
+                        llm_result.parsed_json,
+                        source_file=document.source_file,
+                        source_hash=document.source_hash,
+                    )
+                    messages.append("DeepSeek 解析")
+
+        if parsed_count == 0:
+            parsed_count = create_candidates_from_text(
+                session,
+                text,
+                source_file=document.source_file,
+                source_hash=document.source_hash,
+            )
+            messages.append("规则解析")
+
+        document.status = ImportStatus.parse_done
+        document.updated_at = datetime.utcnow()
+        session.add(document)
+        session.commit()
+
+        fund_codes = fund_codes_for_source(session, document.source_hash)
+        sync_errors = sync_related_market_data(session, fund_codes)
+        if sync_errors:
+            document.error_message = "\n".join(sync_errors)
+            document.updated_at = datetime.utcnow()
+            session.add(document)
+            session.commit()
+        messages.append(f"候选 {parsed_count} 条")
+        if fund_codes:
+            messages.append(f"基金 {', '.join(sorted(fund_codes))}")
+        return "；".join(messages)
+
+
 def process_parse_job(payload: dict[str, Any]) -> str:
     document_id = int(payload["document_id"])
     use_llm = bool(payload.get("use_llm"))
@@ -500,6 +588,66 @@ def process_parse_job(payload: dict[str, Any]) -> str:
         session.add(document)
         session.commit()
         return f"已生成 {parsed_count} 条候选交易"
+
+
+def fund_codes_for_source(session: Session, source_hash: str | None) -> set[str]:
+    if not source_hash:
+        return set()
+    candidates = session.exec(
+        select(FundTransactionCandidate).where(FundTransactionCandidate.source_hash == source_hash)
+    ).all()
+    return {
+        item.fund_code
+        for item in candidates
+        if item.fund_code and item.fund_code != "000000"
+    }
+
+
+def sync_related_market_data(session: Session, fund_codes: set[str]) -> list[str]:
+    errors = []
+    for code in sorted(fund_codes):
+        try:
+            existing_rule = session.get(FundRule, code)
+            if not existing_rule or existing_rule.sync_source not in {"manual", "user"}:
+                synced = fetch_fund_rule_from_akshare(code)
+                rule = existing_rule or FundRule(fund_code=code)
+                rule.fund_name = synced.fund_name or rule.fund_name
+                if synced.buy_confirm_days is not None:
+                    rule.buy_confirm_days = synced.buy_confirm_days
+                if synced.sell_confirm_days is not None:
+                    rule.sell_confirm_days = synced.sell_confirm_days
+                rule.cutoff_time = synced.cutoff_time or rule.cutoff_time or "15:00"
+                if synced.buy_fee_rate is not None:
+                    rule.buy_fee_rate = synced.buy_fee_rate
+                rule.sync_source = synced.source
+                rule.synced_at = sync_timestamp()
+                rule.updated_at = datetime.utcnow()
+                session.add(rule)
+                if synced.fee_tiers:
+                    for tier in session.exec(select(FundFeeTier).where(FundFeeTier.fund_code == code)).all():
+                        session.delete(tier)
+                    for min_days, max_days, rate in synced.fee_tiers:
+                        session.add(
+                            FundFeeTier(
+                                fund_code=code,
+                                min_holding_days=min_days,
+                                max_holding_days=max_days,
+                                redemption_fee_rate=rate,
+                                updated_at=datetime.utcnow(),
+                            )
+                        )
+                session.commit()
+        except Exception as exc:
+            errors.append(f"{code} 规则同步失败：{exc}")
+
+        inserted, error = sync_nav_for_fund(session, code)
+        if error:
+            errors.append(f"{code} 净值同步失败：{error}")
+
+    inserted, error = sync_hs300(session)
+    if error:
+        errors.append(f"沪深300同步失败：{error}")
+    return errors
 
 
 def process_nav_job(payload: dict[str, Any]) -> str:
@@ -939,41 +1087,76 @@ def upload_page(request: Request, _: str = Depends(require_user)):
 async def upload_submit(
     request: Request,
     raw_text: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
     file: Optional[UploadFile] = File(None),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
     ensure_data_dirs()
-    source_file = None
+    uploaded_files = [item for item in files if item and item.filename]
+    if file and file.filename:
+        uploaded_files.append(file)
+
+    documents: list[ImportDocument] = []
+    if uploaded_files:
+        for upload in uploaded_files:
+            document = await create_import_document_from_upload(session, upload, raw_text)
+            documents.append(document)
+    else:
+        document = create_import_document_from_text(session, raw_text)
+        documents.append(document)
+
+    job_ids = []
+    for document in documents:
+        job = create_and_enqueue(session, "auto_import", {"document_id": document.id})
+        job_ids.append(str(job.id))
+    if len(documents) == 1:
+        return redirect(f"/imports/{documents[0].id}?message=自动导入已加入后台任务 #{job_ids[0]}")
+    return redirect(f"/imports?message=已上传 {len(documents)} 个文件，自动导入任务 #{', #'.join(job_ids)}")
+
+
+async def create_import_document_from_upload(
+    session: Session,
+    upload: UploadFile,
+    raw_text: str = "",
+) -> ImportDocument:
+    content = await upload.read()
+    safe_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{Path(upload.filename).name}"
+    target = settings.uploads_dir / safe_name
+    target.write_bytes(content)
+    source_hash = hash_file(target)
+    document = ImportDocument(
+        raw_text=raw_text,
+        file_name=upload.filename,
+        source_file=str(target),
+        source_hash=source_hash,
+        content_type=upload.content_type,
+        status=ImportStatus.uploaded,
+    )
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+    return document
+
+
+def create_import_document_from_text(session: Session, raw_text: str) -> ImportDocument:
     source_hash = hash_content(raw_text.encode())
     document = ImportDocument(
         raw_text=raw_text,
         source_hash=source_hash,
         status=ImportStatus.uploaded,
     )
-    if file and file.filename:
-        content = await file.read()
-        safe_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{Path(file.filename).name}"
-        target = settings.uploads_dir / safe_name
-        target.write_bytes(content)
-        source_file = str(target)
-        source_hash = hash_file(target)
-        document.file_name = file.filename
-        document.source_file = source_file
-        document.source_hash = source_hash
-        document.content_type = file.content_type
-
     session.add(document)
-    session.flush()
-    create_candidates_from_text(session, raw_text, source_file=source_file, source_hash=source_hash)
     session.commit()
-    return redirect(f"/imports/{document.id}")
+    session.refresh(document)
+    return document
 
 
 @app.get("/imports", response_class=HTMLResponse)
 def imports_page(
     request: Request,
     show: str = "",
+    message: str = "",
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -988,6 +1171,7 @@ def imports_page(
             "request": request,
             "documents": documents,
             "show": show,
+            "message": message,
             "llm_configured": is_deepseek_configured(config),
         },
     )
