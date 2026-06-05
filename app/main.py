@@ -3,6 +3,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -71,6 +72,28 @@ def require_user(request: Request) -> str:
 
 def redirect(path: str) -> RedirectResponse:
     return RedirectResponse(path, status_code=HTTP_303_SEE_OTHER)
+
+
+def candidates_url(source_hash: str = "", status: str = "", unmatched: bool = False) -> str:
+    params = {}
+    if source_hash:
+        params["source_hash"] = source_hash
+    if status:
+        params["status"] = status
+    if unmatched:
+        params["unmatched"] = "1"
+    query = urlencode(params)
+    return f"/candidates?{query}" if query else "/candidates"
+
+
+def safe_candidates_return(return_to: str = "") -> str:
+    return return_to if return_to == "/candidates" or return_to.startswith("/candidates?") else "/candidates"
+
+
+def candidates_redirect_with_message(return_to: str, message: str) -> RedirectResponse:
+    target = safe_candidates_return(return_to)
+    joiner = "&" if "?" in target else "?"
+    return redirect(f"{target}{joiner}{urlencode({'message': message})}")
 
 
 def serialize_model(model):
@@ -1890,18 +1913,32 @@ def count_duplicate_candidate_groups(candidates: list[FundTransactionCandidate])
 @app.get("/candidates", response_class=HTMLResponse)
 def candidates_page(
     request: Request,
+    source_hash: str = "",
+    status: str = "",
+    unmatched: bool = False,
+    message: str = "",
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
+    query = select(FundTransactionCandidate)
+    if source_hash:
+        query = query.where(FundTransactionCandidate.source_hash == source_hash)
+    if status in {item.value for item in CandidateStatus}:
+        query = query.where(FundTransactionCandidate.status == CandidateStatus(status))
     candidates = session.exec(
-        select(FundTransactionCandidate).order_by(
-            FundTransactionCandidate.status, desc(FundTransactionCandidate.created_at)
-        )
+        query.order_by(FundTransactionCandidate.status, desc(FundTransactionCandidate.created_at))
     ).all()
     matched = [c for c in candidates if c.fund_code != "000000"]
-    unmatched = [c for c in candidates if c.fund_code == "000000"]
+    unmatched_candidates = [c for c in candidates if c.fund_code == "000000"]
+    if unmatched:
+        matched = []
+    selected_document = None
+    if source_hash:
+        selected_document = session.exec(
+            select(ImportDocument).where(ImportDocument.source_hash == source_hash)
+        ).first()
     groups: dict[str, list] = {}
-    for c in unmatched:
+    for c in unmatched_candidates:
         key = c.fund_name or c.raw_text[:30]
         groups.setdefault(key, []).append(c)
     unmatched_groups = []
@@ -1914,10 +1951,18 @@ def candidates_page(
         {
             "request": request,
             "matched": matched,
-            "unmatched": unmatched,
+            "unmatched": unmatched_candidates,
             "unmatched_groups": unmatched_groups,
             "duplicate_candidate_ids": duplicate_candidate_ids,
             "actions": list(TransactionAction),
+            "filters": {
+                "source_hash": source_hash,
+                "status": status,
+                "unmatched": bool(unmatched),
+            },
+            "return_to": candidates_url(source_hash, status, bool(unmatched)),
+            "selected_document": selected_document,
+            "message": message,
         },
     )
 
@@ -1935,6 +1980,7 @@ def candidate_update(
     share: Optional[float] = Form(None),
     nav: Optional[float] = Form(None),
     fee: Optional[float] = Form(None),
+    return_to: str = Form("/candidates"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -1965,12 +2011,13 @@ def candidate_update(
     candidate.updated_at = datetime.utcnow()
     session.add(candidate)
     session.commit()
-    return redirect("/candidates")
+    return redirect(safe_candidates_return(return_to))
 
 
 @app.post("/candidates/{candidate_id}/confirm")
 def candidate_confirm(
     candidate_id: int,
+    return_to: str = Form("/candidates"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -1978,7 +2025,7 @@ def candidate_confirm(
     if not candidate:
         raise HTTPException(status_code=404)
     if candidate.status == CandidateStatus.confirmed:
-        return redirect("/candidates")
+        return redirect(safe_candidates_return(return_to))
     duplicate = find_duplicate_transaction(session, candidate)
     if duplicate:
         candidate.status = CandidateStatus.confirmed
@@ -1986,7 +2033,7 @@ def candidate_confirm(
         candidate.updated_at = datetime.utcnow()
         session.add(candidate)
         session.commit()
-        return redirect("/candidates")
+        return redirect(safe_candidates_return(return_to))
 
     fee = candidate.fee
     if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
@@ -2025,12 +2072,13 @@ def candidate_confirm(
     candidate.updated_at = datetime.utcnow()
     session.add(candidate)
     session.commit()
-    return redirect("/candidates")
+    return redirect(safe_candidates_return(return_to))
 
 
 @app.post("/candidates/{candidate_id}/ignore")
 def candidate_ignore(
     candidate_id: int,
+    return_to: str = Form("/candidates"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -2042,20 +2090,23 @@ def candidate_ignore(
         candidate.updated_at = datetime.utcnow()
         session.add(candidate)
         session.commit()
-    return redirect("/candidates")
+    return redirect(safe_candidates_return(return_to))
 
 
 @app.post("/candidates/confirm-all")
 def candidates_confirm_all(
+    source_hash: str = Form(""),
+    return_to: str = Form("/candidates"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
-    candidates = session.exec(
-        select(FundTransactionCandidate).where(
-            FundTransactionCandidate.status == CandidateStatus.pending,
-            FundTransactionCandidate.fund_code != "000000",
-        )
-    ).all()
+    query = select(FundTransactionCandidate).where(
+        FundTransactionCandidate.status == CandidateStatus.pending,
+        FundTransactionCandidate.fund_code != "000000",
+    )
+    if source_hash:
+        query = query.where(FundTransactionCandidate.source_hash == source_hash)
+    candidates = session.exec(query).all()
     confirmed = 0
     for candidate in candidates:
         if session.exec(
@@ -2105,7 +2156,7 @@ def candidates_confirm_all(
     msg = f"已确认 {confirmed} 条"
     if skipped:
         msg += f"，跳过 {skipped} 条（重复）"
-    return redirect(f"/candidates?message={msg}")
+    return candidates_redirect_with_message(return_to, msg)
 
 
 def find_duplicate_transaction(
@@ -2201,12 +2252,13 @@ def candidate_suggest_code(
 def candidates_fix_unmatched(
     fund_name: str = Form(...),
     fund_code: str = Form(...),
+    return_to: str = Form("/candidates"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
     code = fund_code.strip().zfill(6)
     if not code.isdigit() or len(code) != 6:
-        return redirect("/candidates?message=无效的基金代码")
+        return candidates_redirect_with_message(return_to, "无效的基金代码")
     candidates = session.exec(
         select(FundTransactionCandidate).where(
             FundTransactionCandidate.fund_name == fund_name,
@@ -2248,8 +2300,8 @@ def candidates_fix_unmatched(
                 messages.append(f"净值同步失败：{error}")
         except Exception as exc:
             messages.append(f"净值同步失败：{exc}")
-        return redirect(f"/candidates?message={'；'.join(messages)}")
-    return redirect("/candidates?message=未找到需要修正的候选")
+        return candidates_redirect_with_message(return_to, "；".join(messages))
+    return candidates_redirect_with_message(return_to, "未找到需要修正的候选")
 
 
 def _apply_unmatched_code_fix(

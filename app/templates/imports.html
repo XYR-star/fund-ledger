@@ -45,9 +45,9 @@
         <td><span class="badge">{{ doc.status.value }}</span></td>
         <td>
           <div class="actions">
-            <span class="badge">候选 {{ audit.get("candidates", 0) }}</span>
-            {% if audit.get("pending", 0) %}<span class="badge">待确认 {{ audit.get("pending", 0) }}</span>{% endif %}
-            {% if audit.get("unmatched", 0) %}<span class="badge" style="background:var(--warn);color:#fff">未匹配 {{ audit.get("unmatched", 0) }}</span>{% endif %}
+            <a class="badge" href="/candidates?source_hash={{ doc.source_hash }}">候选 {{ audit.get("candidates", 0) }}</a>
+            {% if audit.get("pending", 0) %}<a class="badge" href="/candidates?source_hash={{ doc.source_hash }}&status=pending">待确认 {{ audit.get("pending", 0) }}</a>{% endif %}
+            {% if audit.get("unmatched", 0) %}<a class="badge" href="/candidates?source_hash={{ doc.source_hash }}&unmatched=1" style="background:var(--warn);color:#fff">未匹配 {{ audit.get("unmatched", 0) }}</a>{% endif %}
             {% if audit.get("transactions", 0) %}<span class="badge">流水 {{ audit.get("transactions", 0) }}</span>{% endif %}
           </div>
         </td>

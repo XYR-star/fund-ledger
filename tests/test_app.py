@@ -191,6 +191,82 @@ async def test_candidates_page_marks_duplicate_pending_candidates(client):
     assert page.text.count("疑似重复") == 2
 
 
+async def test_candidates_page_filters_by_import_and_confirm_all_scope(client):
+    import app.db
+    from app.models import CandidateStatus, FundTransaction, FundTransactionCandidate, ImportDocument, ImportStatus, TransactionAction
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        first = ImportDocument(file_name="one.png", source_hash="hash-one", status=ImportStatus.parse_done)
+        second = ImportDocument(file_name="two.png", source_hash="hash-two", status=ImportStatus.parse_done)
+        session.add(first)
+        session.add(second)
+        session.commit()
+        session.add(
+            FundTransactionCandidate(
+                status=CandidateStatus.pending,
+                fund_code="161725",
+                fund_name="招商中证白酒",
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=50,
+                nav=2,
+                source_hash="hash-one",
+            )
+        )
+        session.add(
+            FundTransactionCandidate(
+                status=CandidateStatus.pending,
+                fund_code="005827",
+                fund_name="易方达蓝筹",
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.buy,
+                amount_cny=200,
+                share=100,
+                nav=2,
+                source_hash="hash-two",
+            )
+        )
+        session.add(
+            FundTransactionCandidate(
+                status=CandidateStatus.pending,
+                fund_code="000000",
+                fund_name="未知基金",
+                trade_date=date(2024, 1, 4),
+                action=TransactionAction.buy,
+                amount_cny=300,
+                source_hash="hash-one",
+            )
+        )
+        session.commit()
+
+    page = await client.get("/candidates?source_hash=hash-one")
+    assert "one.png" in page.text
+    assert "161725" in page.text
+    assert "005827" not in page.text
+    assert "未知基金" in page.text
+
+    unmatched = await client.get("/candidates?source_hash=hash-one&unmatched=1")
+    assert "未知基金" in unmatched.text
+    assert "161725" not in unmatched.text
+
+    response = await client.post(
+        "/candidates/confirm-all",
+        data={"source_hash": "hash-one", "return_to": "/candidates?source_hash=hash-one"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "source_hash=hash-one" in response.headers["location"]
+
+    with Session(app.db.engine) as session:
+        transactions = session.exec(select(FundTransaction)).all()
+        candidates = session.exec(select(FundTransactionCandidate)).all()
+    assert len(transactions) == 1
+    assert transactions[0].fund_code == "161725"
+    assert {candidate.fund_code: candidate.status for candidate in candidates}["005827"] == CandidateStatus.pending
+
+
 async def test_ignore_candidate_does_not_create_transaction(client):
     await login(client)
     await client.post(

@@ -7,11 +7,37 @@
     <p class="muted">确认后才会进入正式流水并影响持仓。</p>
   </div>
   <div class="actions">
-    <form method="post" action="/candidates/confirm-all"><button class="btn primary" type="submit">一键确认全部已匹配</button></form>
+    <form method="post" action="/candidates/confirm-all">
+      <input type="hidden" name="source_hash" value="{{ filters.source_hash }}">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <button class="btn primary" type="submit">一键确认当前已匹配</button>
+    </form>
     <a class="btn" href="/upload">新增</a>
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
+
+<section class="panel stack" style="margin-bottom:16px">
+  <div class="actions">
+    {% if selected_document %}
+    <span class="badge">导入 #{{ selected_document.id }}</span>
+    <strong>{{ selected_document.file_name or "手动文本" }}</strong>
+    {% elif filters.source_hash %}
+    <span class="badge">导入筛选</span>
+    <strong>{{ filters.source_hash[:12] }}</strong>
+    {% else %}
+    <span class="badge">全部导入</span>
+    {% endif %}
+  </div>
+  <div class="actions">
+    <a class="btn small" href="/candidates{% if filters.source_hash %}?source_hash={{ filters.source_hash }}{% endif %}">全部候选</a>
+    <a class="btn small" href="/candidates?{% if filters.source_hash %}source_hash={{ filters.source_hash }}&{% endif %}status=pending">待确认</a>
+    <a class="btn small" href="/candidates?{% if filters.source_hash %}source_hash={{ filters.source_hash }}&{% endif %}unmatched=1">未匹配</a>
+    {% if filters.source_hash or filters.status or filters.unmatched %}
+    <a class="btn small" href="/candidates">清除筛选</a>
+    {% endif %}
+  </div>
+</section>
 
 {% if unmatched %}
 <section class="panel stack">
@@ -26,6 +52,7 @@
     </div>
     <form method="post" action="/candidates/fix-unmatched" style="display:flex; gap:6px; align-items:center;">
       <input type="hidden" name="fund_name" value="{{ group_name }}">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
       <input name="fund_code" placeholder="6位代码" required style="width:90px;">
       <button class="btn primary" type="submit">修正</button>
     </form>
@@ -46,6 +73,7 @@
       <span class="muted">{{ c.raw_text }}</span>
     </div>
     <form class="form-grid" method="post" action="/candidates/{{ c.id }}/update">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
       <input type="hidden" name="trade_date" value="{{ c.trade_date }}">
       <input type="hidden" name="confirm_date" value="{{ c.confirm_date or '' }}">
       <label>代码<input name="fund_code" value="{{ c.fund_code }}" required></label>
@@ -76,8 +104,14 @@
     </form>
     <div class="actions">
       {% if c.status.value == "pending" %}
-      <form method="post" action="/candidates/{{ c.id }}/confirm"><button class="btn primary" type="submit">确认入账</button></form>
-      <form method="post" action="/candidates/{{ c.id }}/ignore"><button class="btn warn" type="submit">忽略</button></form>
+      <form method="post" action="/candidates/{{ c.id }}/confirm">
+        <input type="hidden" name="return_to" value="{{ return_to }}">
+        <button class="btn primary" type="submit">确认入账</button>
+      </form>
+      <form method="post" action="/candidates/{{ c.id }}/ignore">
+        <input type="hidden" name="return_to" value="{{ return_to }}">
+        <button class="btn warn" type="submit">忽略</button>
+      </form>
       {% endif %}
     </div>
   </section>
