@@ -1066,6 +1066,74 @@ async def test_minimal_buy_infers_nav_after_cutoff(client):
     assert "2.0" in page.text
 
 
+async def test_candidate_confirm_backfills_missing_qdii_values_from_nav(client):
+    import app.db
+    from app.models import CandidateStatus, FundNav, FundRule, FundTransaction, FundTransactionCandidate, TransactionAction
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(
+            FundRule(
+                fund_code="006327",
+                fund_name="易方达中证海外互联网50ETF联接(QDII)A",
+                fund_type="QDII",
+                buy_confirm_days=2,
+                sell_confirm_days=2,
+                buy_fee_rate=0.0,
+            )
+        )
+        session.add(FundNav(fund_code="006327", nav_date=date(2025, 7, 18), unit_nav=1.1022))
+        session.add(FundNav(fund_code="006327", nav_date=date(2025, 7, 21), unit_nav=1.1143))
+        session.add(FundNav(fund_code="006327", nav_date=date(2025, 7, 22), unit_nav=1.13))
+        session.add(
+            FundTransactionCandidate(
+                status=CandidateStatus.pending,
+                fund_code="006327",
+                fund_name="易方达中证海外互联网50ETF联接(QDII)A",
+                trade_date=date(2025, 7, 18),
+                action=TransactionAction.buy,
+                amount_cny=50,
+                confidence=0.85,
+            )
+        )
+        session.commit()
+
+    response = await client.post("/candidates/1/confirm", follow_redirects=False)
+    assert response.status_code == 303
+    with Session(app.db.engine) as session:
+        tx = session.exec(select(FundTransaction)).one()
+    assert tx.nav == 1.1022
+    assert tx.share == 45.36
+    assert tx.confirm_date == date(2025, 7, 22)
+
+
+async def test_manual_transaction_without_nav_persists_resolved_nav(client):
+    import app.db
+    from app.models import FundNav, FundRule
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundRule(fund_code="161725", fund_name="招商中证白酒", buy_fee_rate=0.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.1))
+        session.commit()
+
+    response = await client.post(
+        "/transactions",
+        data={
+            "fund_code": "161725",
+            "trade_date": "2024-01-02",
+            "action": "buy",
+            "amount_cny": "1000",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    page = await client.get("/transactions")
+    assert "2.0000" in page.text
+    assert "500.0000" in page.text
+
+
 async def test_llm_rows_apply_submitted_time_cutoff(client):
     import app.db
     from app.main import create_candidates_from_rows

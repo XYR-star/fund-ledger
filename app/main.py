@@ -605,6 +605,18 @@ def find_next_nav_date(session: Session, fund_code: str, nav_date: date) -> date
     return find_nth_nav_date(session, fund_code, nav_date, 1)
 
 
+def nav_value_on_date(session: Session, fund_code: str, nav_date: date | None) -> float | None:
+    if not nav_date:
+        return None
+    item = session.exec(
+        select(FundNav).where(
+            FundNav.fund_code == fund_code,
+            FundNav.nav_date == nav_date,
+        )
+    ).first()
+    return item.unit_nav if item else None
+
+
 def get_fund_rule(session: Session, fund_code: str) -> FundRule:
     existing = session.get(FundRule, fund_code)
     if existing:
@@ -805,7 +817,8 @@ def calculate_manual_transaction_values(
             trade_date,
             submitted_at=submitted_at,
         )
-        return amount_cny, share, fee if fee is not None else calc_fee, confirm_date or calc_confirm, calc_trade_date, nav
+        calc_nav = 1.0 if is_money_fund(session, fund_code) else nav_value_on_date(session, fund_code, calc_trade_date)
+        return amount_cny, share, fee if fee is not None else calc_fee, confirm_date or calc_confirm, calc_trade_date, calc_nav
     rule = get_fund_rule(session, fund_code)
     money = is_money_fund(session, fund_code)
     nav_value = 1.0 if money else nav
@@ -850,6 +863,56 @@ def calculate_manual_transaction_values(
         elif share is not None and share > 0 and amount_cny is None:
             amount_cny = round(share * nav_value, 2)
     return amount_cny, share, calc_fee, calc_confirm, trade_date, nav_value
+
+
+def backfill_incomplete_transaction_values(session: Session) -> int:
+    changed = 0
+    transactions = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)).all()
+    for tx in transactions:
+        if tx.fund_code == "000000":
+            continue
+        if not _transaction_needs_value_backfill(tx):
+            continue
+        amount_cny, share, fee, confirm_date, trade_date, nav = calculate_manual_transaction_values(
+            session,
+            tx.fund_code,
+            tx.action,
+            tx.amount_cny,
+            tx.share,
+            tx.nav,
+            tx.fee,
+            tx.trade_date,
+            tx.submitted_at,
+            tx.confirm_date,
+        )
+        item_changed = False
+        for key, value in (
+            ("amount_cny", amount_cny),
+            ("share", share),
+            ("fee", fee),
+            ("confirm_date", confirm_date),
+            ("nav", nav),
+        ):
+            if getattr(tx, key) is None and value is not None:
+                setattr(tx, key, value)
+                item_changed = True
+        if tx.nav is None and nav is not None and trade_date != tx.trade_date:
+            tx.trade_date = trade_date
+            item_changed = True
+        if item_changed:
+            session.add(tx)
+            changed += 1
+    if changed:
+        session.commit()
+    return changed
+
+
+def _transaction_needs_value_backfill(tx: FundTransaction) -> bool:
+    if tx.action == TransactionAction.dividend:
+        return tx.amount_cny is None or tx.confirm_date is None
+    if tx.action in {TransactionAction.buy, TransactionAction.sell, TransactionAction.dividend_reinvest}:
+        return tx.share is None or tx.nav is None or tx.confirm_date is None
+    return tx.confirm_date is None
 
 
 def create_candidates_from_rows(
@@ -2388,7 +2451,9 @@ def candidate_update(
     )
     candidate.amount_cny = amount_cny if amount_cny is not None else calc_amount
     candidate.share = share if share is not None else calc_share
-    candidate.nav = 1.0 if is_money_fund(session, fund_code.zfill(6)) else nav
+    candidate.nav = 1.0 if is_money_fund(session, fund_code.zfill(6)) else (
+        nav if nav is not None else nav_value_on_date(session, fund_code.zfill(6), calc_trade_date)
+    )
     candidate.fee = fee if fee is not None else calc_fee
     candidate.confirm_date = confirm_date or calc_confirm
     candidate.trade_date = trade_date if confirm_date else calc_trade_date
@@ -2473,6 +2538,7 @@ def candidates_auto_confirm_safe(
     confirmed = 0
     skipped = 0
     for candidate in candidates:
+        backfill_candidate_values(session, candidate)
         quality = candidate_quality(session, candidate)
         if not quality["auto_confirmable"]:
             skipped += 1
@@ -2488,6 +2554,7 @@ def candidates_auto_confirm_safe(
 def confirm_candidate_transaction(session: Session, candidate: FundTransactionCandidate) -> bool:
     if candidate.status == CandidateStatus.confirmed:
         return False
+    backfill_candidate_values(session, candidate)
     existing = session.exec(select(FundTransaction).where(FundTransaction.candidate_id == candidate.id)).first()
     if existing:
         candidate.status = CandidateStatus.confirmed
@@ -2534,6 +2601,53 @@ def confirm_candidate_transaction(session: Session, candidate: FundTransactionCa
     candidate.updated_at = datetime.utcnow()
     session.add(candidate)
     return True
+
+
+def backfill_candidate_values(session: Session, candidate: FundTransactionCandidate) -> bool:
+    if candidate.fund_code == "000000" or not candidate.trade_date:
+        return False
+    if not _candidate_needs_value_backfill(candidate):
+        return False
+    amount_cny, share, fee, confirm_date, trade_date = apply_trade_calculation(
+        session,
+        candidate.fund_code,
+        candidate.action,
+        candidate.amount_cny,
+        candidate.share,
+        candidate.nav,
+        candidate.trade_date,
+        submitted_at=candidate.submitted_at,
+    )
+    money = is_money_fund(session, candidate.fund_code)
+    nav = 1.0 if money else (
+        candidate.nav if candidate.nav is not None else nav_value_on_date(session, candidate.fund_code, trade_date)
+    )
+    changed = False
+    for key, value in (
+        ("amount_cny", amount_cny),
+        ("share", share),
+        ("fee", fee),
+        ("confirm_date", confirm_date),
+        ("nav", nav),
+    ):
+        if getattr(candidate, key) is None and value is not None:
+            setattr(candidate, key, value)
+            changed = True
+    if candidate.nav is None and nav is not None and trade_date != candidate.trade_date:
+        candidate.trade_date = trade_date
+        changed = True
+    if changed:
+        candidate.updated_at = datetime.utcnow()
+        session.add(candidate)
+    return changed
+
+
+def _candidate_needs_value_backfill(candidate: FundTransactionCandidate) -> bool:
+    if candidate.action == TransactionAction.dividend:
+        return candidate.amount_cny is None or candidate.confirm_date is None
+    if candidate.action in {TransactionAction.buy, TransactionAction.sell, TransactionAction.dividend_reinvest}:
+        return candidate.share is None or candidate.nav is None or candidate.confirm_date is None
+    return candidate.confirm_date is None
 
 
 def find_duplicate_transaction(
