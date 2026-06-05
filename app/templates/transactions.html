@@ -9,8 +9,29 @@
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
 <section class="panel stack" style="margin-bottom:16px">
+  <h2>筛选</h2>
+  <form class="form-grid" method="get" action="/transactions">
+    <label>代码<input name="fund_code" value="{{ filters.fund_code }}" placeholder="6位代码"></label>
+    <label>动作
+      <select name="action">
+        <option value="">全部</option>
+        {% for action in actions %}
+        <option value="{{ action.value }}" {% if filters.action == action.value %}selected{% endif %}>{{ action.value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>开始日期<input type="date" name="date_from" value="{{ filters.date_from or '' }}"></label>
+    <label>结束日期<input type="date" name="date_to" value="{{ filters.date_to or '' }}"></label>
+    <div class="actions">
+      <button class="btn primary" type="submit">筛选</button>
+      <a class="btn" href="/transactions">清除</a>
+    </div>
+  </form>
+</section>
+<section class="panel stack" style="margin-bottom:16px">
   <h2>手动新增流水</h2>
   <form class="form-grid" method="post" action="/transactions">
+    <input type="hidden" name="return_to" value="{{ return_to }}">
     <label>代码<input name="fund_code" required placeholder="6位代码"></label>
     <label>名称<input name="fund_name" placeholder="可留空使用规则名称"></label>
     <label>交易日<input type="date" name="trade_date" required></label>
@@ -39,24 +60,50 @@
     <tbody>
       {% for t in transactions %}
       <tr>
-        <td>{{ t.trade_date }}</td>
-        <td>{% if t.submitted_at %}{{ t.submitted_at.strftime('%H:%M') }}{% else %}-{% endif %}</td>
-        <td>{{ t.confirm_date or "-" }}</td>
-        <td>{{ t.fund_code }}</td>
-        <td>{{ t.fund_name or "-" }}</td>
-        <td>{{ t.action.value }}</td>
-        <td>{% if t.amount_cny is not none %}¥{{ "%.2f"|format(t.amount_cny) }}{% else %}-{% endif %}</td>
-        <td>{% if t.share is not none %}{{ "%.4f"|format(t.share) }}{% else %}-{% endif %}</td>
-        <td>{% if t.nav is not none %}{{ "%.4f"|format(t.nav) }}{% else %}-{% endif %}</td>
-        <td>{% if t.fee is not none %}¥{{ "%.2f"|format(t.fee) }}{% else %}-{% endif %}</td>
         <td>
-          {% if t.source_file == "manual" %}<span class="badge">手动</span>{% elif t.source_file %}<span class="badge">导入</span>{% else %}-{% endif %}
-          {% if t.source_file == "manual" and t.raw_text %}<span class="muted">{{ t.raw_text[:24] }}</span>{% endif %}
+          <form id="tx-update-{{ t.id }}" method="post" action="/transactions/{{ t.id }}/update"></form>
+          <input form="tx-update-{{ t.id }}" type="hidden" name="return_to" value="{{ return_to }}">
+          <input form="tx-update-{{ t.id }}" type="date" name="trade_date" value="{{ t.trade_date }}" required>
+        </td>
+        <td><input form="tx-update-{{ t.id }}" type="time" name="submitted_at" value="{{ t.submitted_at.strftime('%H:%M') if t.submitted_at else '' }}"></td>
+        <td><input form="tx-update-{{ t.id }}" type="date" name="confirm_date" value="{{ t.confirm_date or '' }}"></td>
+        <td><input form="tx-update-{{ t.id }}" name="fund_code" value="{{ t.fund_code }}" required style="width:88px"></td>
+        <td><input form="tx-update-{{ t.id }}" name="fund_name" value="{{ t.fund_name or '' }}" style="min-width:160px"></td>
+        <td>
+          <select form="tx-update-{{ t.id }}" name="action">
+            {% for action in actions %}
+            <option value="{{ action.value }}" {% if t.action == action %}selected{% endif %}>{{ action.value }}</option>
+            {% endfor %}
+          </select>
         </td>
         <td>
-          <form method="post" action="/transactions/{{ t.id }}/delete">
-            <button class="btn danger small" type="submit">删除</button>
-          </form>
+          <input form="tx-update-{{ t.id }}" type="number" step="0.01" name="amount_cny" value="{{ t.amount_cny if t.amount_cny is not none else '' }}" style="width:110px">
+          <div class="muted">{% if t.amount_cny is not none %}¥{{ "%.2f"|format(t.amount_cny) }}{% else %}-{% endif %}</div>
+        </td>
+        <td>
+          <input form="tx-update-{{ t.id }}" type="number" step="0.0001" name="share" value="{{ t.share if t.share is not none else '' }}" style="width:110px">
+          <div class="muted">{% if t.share is not none %}{{ "%.4f"|format(t.share) }}{% else %}-{% endif %}</div>
+        </td>
+        <td>
+          <input form="tx-update-{{ t.id }}" type="number" step="0.0001" name="nav" value="{{ t.nav if t.nav is not none else '' }}" style="width:90px">
+          <div class="muted">{% if t.nav is not none %}{{ "%.4f"|format(t.nav) }}{% else %}-{% endif %}</div>
+        </td>
+        <td>
+          <input form="tx-update-{{ t.id }}" type="number" step="0.01" name="fee" value="{{ t.fee if t.fee is not none else '' }}" style="width:90px">
+          <div class="muted">{% if t.fee is not none %}¥{{ "%.2f"|format(t.fee) }}{% else %}-{% endif %}</div>
+        </td>
+        <td>
+          {% if t.source_file == "manual" %}<span class="badge">手动</span>{% elif t.source_file %}<span class="badge">导入</span>{% else %}-{% endif %}
+          <input form="tx-update-{{ t.id }}" name="note" value="{{ t.raw_text if t.source_file == 'manual' else '' }}" placeholder="备注" style="min-width:110px">
+        </td>
+        <td>
+          <div class="actions">
+            <button form="tx-update-{{ t.id }}" class="btn small" type="submit">保存</button>
+            <form method="post" action="/transactions/{{ t.id }}/delete">
+              <input type="hidden" name="return_to" value="{{ return_to }}">
+              <button class="btn danger small" type="submit">删除</button>
+            </form>
+          </div>
         </td>
       </tr>
       {% else %}

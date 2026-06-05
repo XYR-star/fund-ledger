@@ -383,6 +383,70 @@ async def test_manual_transaction_create_and_delete(client):
     assert "161725" not in holdings.text
 
 
+async def test_transactions_filter_and_edit_updates_holdings(client):
+    import app.db
+    from app.models import FundRule, FundTransaction, TransactionAction
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundRule(fund_code="161725", fund_name="招商中证白酒", buy_fee_rate=0.0))
+        session.add(FundRule(fund_code="005827", fund_name="易方达蓝筹", buy_fee_rate=0.0))
+        session.add(
+            FundTransaction(
+                fund_code="161725",
+                fund_name="招商中证白酒",
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=1000,
+                share=500,
+                nav=2,
+                source_file="manual",
+                raw_text="old note",
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹",
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.buy,
+                amount_cny=200,
+                share=100,
+                nav=2,
+                source_file="manual",
+            )
+        )
+        session.commit()
+        tx_id = session.exec(select(FundTransaction).where(FundTransaction.fund_code == "161725")).first().id
+
+    page = await client.get("/transactions?fund_code=161725&action=buy&date_from=2024-01-01&date_to=2024-01-02")
+    assert "招商中证白酒" in page.text
+    assert "易方达蓝筹" not in page.text
+
+    response = await client.post(
+        f"/transactions/{tx_id}/update",
+        data={
+            "return_to": "/transactions?fund_code=161725",
+            "fund_code": "161725",
+            "fund_name": "招商中证白酒",
+            "trade_date": "2024-01-02",
+            "action": "buy",
+            "amount_cny": "1200",
+            "nav": "2.0",
+            "fee": "0",
+            "note": "edited note",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "fund_code=161725" in response.headers["location"]
+    page = await client.get("/transactions?fund_code=161725")
+    assert "edited note" in page.text
+    assert "600.0" in page.text
+    holdings = await client.get("/holdings")
+    assert "600.0000" in holdings.text
+
+
 async def test_holdings_calculation_without_synced_nav(client):
     await login(client)
     await client.post(

@@ -153,6 +153,35 @@ def candidates_redirect_with_message(return_to: str, message: str) -> RedirectRe
     return redirect(f"{target}{joiner}{urlencode({'message': message})}")
 
 
+def transactions_url(
+    fund_code: str = "",
+    action: str = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> str:
+    params = {}
+    if fund_code:
+        params["fund_code"] = fund_code
+    if action:
+        params["action"] = action
+    if date_from:
+        params["date_from"] = date_from.isoformat()
+    if date_to:
+        params["date_to"] = date_to.isoformat()
+    query = urlencode(params)
+    return f"/transactions?{query}" if query else "/transactions"
+
+
+def safe_transactions_return(return_to: str = "") -> str:
+    return return_to if return_to == "/transactions" or return_to.startswith("/transactions?") else "/transactions"
+
+
+def transactions_redirect_with_message(return_to: str, message: str) -> RedirectResponse:
+    target = safe_transactions_return(return_to)
+    joiner = "&" if "?" in target else "?"
+    return redirect(f"{target}{joiner}{urlencode({'message': message})}")
+
+
 def serialize_model(model):
     data = model.model_dump()
     for key, value in data.items():
@@ -2595,12 +2624,25 @@ def _apply_unmatched_code_fix(
 def transactions_page(
     request: Request,
     message: str = "",
+    fund_code: str = "",
+    action: str = "",
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
-    transactions = session.exec(
-        select(FundTransaction).order_by(desc(FundTransaction.trade_date))
-    ).all()
+    query = select(FundTransaction)
+    code = fund_code.strip().zfill(6) if fund_code.strip() else ""
+    if code:
+        query = query.where(FundTransaction.fund_code == code)
+    if action in {item.value for item in TransactionAction}:
+        query = query.where(FundTransaction.action == TransactionAction(action))
+    if date_from:
+        query = query.where(FundTransaction.trade_date >= date_from)
+    if date_to:
+        query = query.where(FundTransaction.trade_date <= date_to)
+    transactions = session.exec(query.order_by(desc(FundTransaction.trade_date), desc(FundTransaction.id))).all()
+    return_to = transactions_url(code, action, date_from, date_to)
     return templates.TemplateResponse(
         "transactions.html",
         {
@@ -2608,6 +2650,13 @@ def transactions_page(
             "transactions": transactions,
             "actions": list(TransactionAction),
             "message": message,
+            "filters": {
+                "fund_code": code,
+                "action": action,
+                "date_from": date_from,
+                "date_to": date_to,
+            },
+            "return_to": return_to,
         },
     )
 
@@ -2625,12 +2674,13 @@ def transaction_create(
     nav: Optional[float] = Form(None),
     fee: Optional[float] = Form(None),
     note: str = Form(""),
+    return_to: str = Form("/transactions"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
     code = fund_code.strip().zfill(6)
     if not code.isdigit() or len(code) != 6:
-        return redirect("/transactions?message=无效的基金代码")
+        return transactions_redirect_with_message(return_to, "无效的基金代码")
     rule = get_fund_rule(session, code)
     amount_cny, share, fee, confirm_date, trade_date, nav = calculate_manual_transaction_values(
         session,
@@ -2660,12 +2710,66 @@ def transaction_create(
     )
     session.add(tx)
     session.commit()
-    return redirect("/transactions?message=手动流水已新增")
+    return transactions_redirect_with_message(return_to, "手动流水已新增")
+
+
+@app.post("/transactions/{transaction_id}/update")
+def transaction_update(
+    transaction_id: int,
+    fund_code: str = Form(...),
+    fund_name: str = Form(""),
+    trade_date: date = Form(...),
+    submitted_at: Optional[time] = Form(None),
+    confirm_date: Optional[date] = Form(None),
+    action: TransactionAction = Form(...),
+    amount_cny: Optional[float] = Form(None),
+    share: Optional[float] = Form(None),
+    nav: Optional[float] = Form(None),
+    fee: Optional[float] = Form(None),
+    note: str = Form(""),
+    return_to: str = Form("/transactions"),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    tx = session.get(FundTransaction, transaction_id)
+    if not tx:
+        raise HTTPException(status_code=404)
+    code = fund_code.strip().zfill(6)
+    if not code.isdigit() or len(code) != 6:
+        return transactions_redirect_with_message(return_to, "无效的基金代码")
+    rule = get_fund_rule(session, code)
+    amount_cny, share, fee, confirm_date, trade_date, nav = calculate_manual_transaction_values(
+        session,
+        code,
+        action,
+        amount_cny,
+        share,
+        nav,
+        fee,
+        trade_date,
+        submitted_at,
+        confirm_date,
+    )
+    tx.fund_code = code
+    tx.fund_name = fund_name.strip() or rule.fund_name
+    tx.trade_date = trade_date
+    tx.submitted_at = submitted_at
+    tx.confirm_date = confirm_date
+    tx.action = action
+    tx.amount_cny = amount_cny
+    tx.share = share
+    tx.nav = nav
+    tx.fee = fee
+    tx.raw_text = note.strip()
+    session.add(tx)
+    session.commit()
+    return transactions_redirect_with_message(return_to, "流水已更新")
 
 
 @app.post("/transactions/{transaction_id}/delete")
 def transaction_delete(
     transaction_id: int,
+    return_to: str = Form("/transactions"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -2681,7 +2785,7 @@ def transaction_delete(
             session.add(candidate)
     session.delete(tx)
     session.commit()
-    return redirect("/transactions?message=流水已删除")
+    return transactions_redirect_with_message(return_to, "流水已删除")
 
 
 @app.get("/holdings", response_class=HTMLResponse)
