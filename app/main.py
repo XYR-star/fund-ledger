@@ -1678,43 +1678,19 @@ def build_health_report(session: Session) -> dict[str, Any]:
             }
         )
 
-    qdii_short_confirm = [
-        rule.fund_code
-        for rule in rules.values()
-        if is_qdii_like_rule(rule)
-        and rule.fund_code in known_codes
-        and (rule.buy_confirm_days <= 1 or rule.sell_confirm_days <= 1)
-    ]
-    if qdii_short_confirm:
+    qdii_auto_review_codes = qdii_rule_auto_review_codes(rules.values(), known_codes)
+    if qdii_auto_review_codes:
         issues.append(
             {
-                "severity": "warn",
-                "title": "QDII/海外基金确认日需核对",
-                "count": len(qdii_short_confirm),
-                "detail": "海外基金常见确认日比普通基金更晚；如果规则仍是 T+1，导入时可能提前取净值。",
+                "severity": "info",
+                "title": "QDII/海外基金规则可自动复核",
+                "count": len(qdii_auto_review_codes),
+                "detail": "系统会后台重新查询这些海外基金的确认日、费率和净值；只有查询失败或来源冲突时再提示处理。",
                 "link": "/fund-rules",
-                "action": "核对规则",
-                "codes": qdii_short_confirm[:8],
-            }
-        )
-
-    qdii_unsynced = [
-        rule.fund_code
-        for rule in rules.values()
-        if is_qdii_like_rule(rule)
-        and rule.fund_code in known_codes
-        and not rule.sync_source
-    ]
-    if qdii_unsynced:
-        issues.append(
-            {
-                "severity": "warn",
-                "title": "QDII/海外基金规则未同步",
-                "count": len(qdii_unsynced),
-                "detail": "未同步规则时会沿用默认确认日和费率，建议先自动查询再人工核对。",
-                "link": "/fund-rules",
-                "action": "同步规则",
-                "codes": qdii_unsynced[:8],
+                "action": "查看规则",
+                "form_action": "/fund-rules/sync-qdiis",
+                "form_label": "自动复核",
+                "codes": qdii_auto_review_codes[:8],
             }
         )
 
@@ -1781,6 +1757,18 @@ def is_qdii_like_rule(rule: FundRule) -> bool:
     if "港股通" in text and "QDII" not in text and "海外" not in text:
         return False
     return any(word in text for word in ("QDII", "海外", "全球", "纳斯达克", "标普", "美国"))
+
+
+def qdii_rule_auto_review_codes(rules: list[FundRule] | Any, known_codes: list[str] | set[str]) -> list[str]:
+    known = set(known_codes)
+    codes = [
+        rule.fund_code
+        for rule in rules
+        if rule.fund_code in known
+        and is_qdii_like_rule(rule)
+        and (not rule.sync_source or rule.buy_confirm_days <= 1 or rule.sell_confirm_days <= 1)
+    ]
+    return sorted(set(codes))
 
 
 @app.get("/health", response_class=HTMLResponse)
@@ -1890,9 +1878,26 @@ def fund_rules_page(
     tiers_by_code: dict[str, list[FundFeeTier]] = {}
     for tier in tiers:
         tiers_by_code.setdefault(tier.fund_code, []).append(tier)
+    known_codes = {
+        item.fund_code
+        for item in session.exec(select(FundTransaction)).all()
+        if item.fund_code and item.fund_code != "000000"
+    } | {
+        item.fund_code
+        for item in session.exec(select(FundTransactionCandidate)).all()
+        if item.fund_code and item.fund_code != "000000"
+    }
+    qdii_review_codes = qdii_rule_auto_review_codes(rules, known_codes)
     return templates.TemplateResponse(
         "fund_rules.html",
-        {"request": request, "rules": rules, "tiers_by_code": tiers_by_code, "message": message, "jobs": jobs},
+        {
+            "request": request,
+            "rules": rules,
+            "tiers_by_code": tiers_by_code,
+            "message": message,
+            "jobs": jobs,
+            "qdii_review_codes": qdii_review_codes,
+        },
     )
 
 
@@ -1932,6 +1937,28 @@ def fund_rule_sync(
     code = fund_code.zfill(6)
     job = create_and_enqueue(session, "sync_fund_rule", {"fund_code": code})
     return redirect(f"/fund-rules?message=规则同步已加入后台任务 #{job.id}")
+
+
+@app.post("/fund-rules/sync-qdiis")
+def fund_rule_sync_qdiis(
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    rules = session.exec(select(FundRule)).all()
+    known_codes = {
+        item.fund_code
+        for item in session.exec(select(FundTransaction)).all()
+        if item.fund_code and item.fund_code != "000000"
+    } | {
+        item.fund_code
+        for item in session.exec(select(FundTransactionCandidate)).all()
+        if item.fund_code and item.fund_code != "000000"
+    }
+    codes = qdii_rule_auto_review_codes(rules, known_codes)
+    jobs = [create_and_enqueue(session, "sync_fund_rule", {"fund_code": code}) for code in codes]
+    if not jobs:
+        return redirect("/fund-rules?message=暂无需要自动复核的 QDII/海外基金规则")
+    return redirect(f"/fund-rules?message=已加入 {len(jobs)} 个 QDII/海外规则复核任务")
 
 
 @app.post("/fund-rules/{fund_code}/tiers")

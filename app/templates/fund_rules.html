@@ -15,6 +15,12 @@
     <label>基金代码<input name="fund_code" required placeholder="161725"></label>
     <div class="actions"><button class="btn primary" type="submit">自动查询并保存</button></div>
   </form>
+  {% if qdii_review_codes %}
+  <form method="post" action="/fund-rules/sync-qdiis">
+    <button class="btn primary" type="submit">自动复核 QDII/海外规则 {{ qdii_review_codes|length }}</button>
+  </form>
+  <p class="sample">{{ qdii_review_codes|join(", ") }}</p>
+  {% endif %}
   <p class="muted">优先使用 AKShare 的天天基金/东方财富接口，缺失时尝试雪球/蛋卷规则接口；查询失败不会覆盖现有人工规则。</p>
 </section>
 
@@ -65,8 +71,8 @@
         <span class="badge">{{ rule.cutoff_time }}</span>
         <span class="badge">买入费率 {{ "%.4f"|format(rule.buy_fee_rate) }}</span>
         {% set rule_text = ((rule.fund_name or '') ~ ' ' ~ (rule.fund_type or ''))|upper %}
-        {% if ('QDII' in rule_text or '海外' in rule_text or '全球' in rule_text or '纳斯达克' in rule_text or '标普' in rule_text or '美国' in rule_text) and (rule.buy_confirm_days <= 1 or rule.sell_confirm_days <= 1) %}
-        <span class="badge" style="background:var(--warn);color:#fff">海外确认日待核对</span>
+        {% if rule.fund_code in qdii_review_codes %}
+        <span class="badge" style="background:var(--accent);color:#fff">海外规则可自动复核</span>
         {% endif %}
         {% if rule.sync_source %}<span class="badge">{{ rule.sync_source }}</span>{% endif %}
       </div>

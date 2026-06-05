@@ -39,7 +39,14 @@
       <p class="sample">{{ issue.codes|join(", ") }}{% if issue.count > issue.codes|length %} ...{% endif %}</p>
       {% endif %}
     </div>
-    <a class="btn" href="{{ issue.link }}">{{ issue.action }}</a>
+    <div class="actions">
+      {% if issue.form_action %}
+      <form method="post" action="{{ issue.form_action }}">
+        <button class="btn primary" type="submit">{{ issue.form_label or "自动处理" }}</button>
+      </form>
+      {% endif %}
+      <a class="btn" href="{{ issue.link }}">{{ issue.action }}</a>
+    </div>
   </article>
   {% endfor %}
 </section>

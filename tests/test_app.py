@@ -706,7 +706,7 @@ async def test_health_page_reports_data_quality_issues(client):
     assert "/backup" in page.text
 
 
-async def test_health_page_flags_qdii_short_confirm_days_not_hk_connect(client):
+async def test_health_page_offers_qdii_auto_review_not_hk_connect(client):
     await login(client)
     import app.db
     from app.models import FundNav, FundRule, FundTransaction, TransactionAction
@@ -759,9 +759,79 @@ async def test_health_page_flags_qdii_short_confirm_days_not_hk_connect(client):
         session.commit()
 
     page = await client.get("/health")
-    assert "QDII/海外基金确认日需核对" in page.text
+    assert "QDII/海外基金规则可自动复核" in page.text
+    assert "/fund-rules/sync-qdiis" in page.text
     assert "013308" in page.text
     assert "021457" not in page.text
+    rules_page = await client.get("/fund-rules")
+    assert "自动复核 QDII/海外规则 1" in rules_page.text
+    assert "海外规则可自动复核" in rules_page.text
+
+
+async def test_qdii_auto_review_enqueues_rule_sync_jobs(client, monkeypatch):
+    await login(client)
+    import app.db
+    import app.main
+    from app.models import FundRule, FundTransaction, TransactionAction
+
+    with Session(app.db.engine) as session:
+        session.add(
+            FundRule(
+                fund_code="013308",
+                fund_name="易方达恒生科技ETF联接(QDII)A",
+                fund_type="指数型-海外股票",
+                buy_confirm_days=1,
+                sell_confirm_days=1,
+                sync_source="akshare",
+            )
+        )
+        session.add(
+            FundRule(
+                fund_code="021457",
+                fund_name="易方达恒生港股通高股息低波动ETF联接发起式A",
+                fund_type="指数型-股票",
+                buy_confirm_days=1,
+                sell_confirm_days=1,
+                sync_source="akshare",
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="013308",
+                fund_name="易方达恒生科技ETF联接(QDII)A",
+                trade_date=date(2025, 7, 18),
+                action=TransactionAction.buy,
+                amount_cny=50,
+                share=36.39,
+                nav=1.3741,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="021457",
+                fund_name="易方达恒生港股通高股息低波动ETF联接发起式A",
+                trade_date=date(2025, 7, 18),
+                action=TransactionAction.buy,
+                amount_cny=50,
+                share=39.93,
+                nav=1.2523,
+            )
+        )
+        session.commit()
+
+    calls = []
+
+    class Job:
+        id = 1
+
+    def fake_create_and_enqueue(session, job_type, payload):
+        calls.append((job_type, payload))
+        return Job()
+
+    monkeypatch.setattr(app.main, "create_and_enqueue", fake_create_and_enqueue)
+    response = await client.post("/fund-rules/sync-qdiis", follow_redirects=False)
+    assert response.status_code == 303
+    assert calls == [("sync_fund_rule", {"fund_code": "013308"})]
 
 
 async def test_ocr_import_to_candidate_flow(client, monkeypatch):
