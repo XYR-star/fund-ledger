@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}数据体检 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>数据体检</h1>
+    <p class="muted">集中检查会影响收益、持仓和曲线精度的问题。</p>
+  </div>
+  <div class="actions">
+    <a class="btn" href="/backup">备份</a>
+    <a class="btn primary" href="/nav">同步净值</a>
+  </div>
+</div>
+
+<section class="panel stack" style="margin-bottom:16px">
+  <div class="metrics">
+    <div class="metric"><span>正式流水</span><strong>{{ report.stats.transactions }}</strong></div>
+    <div class="metric"><span>待确认</span><strong>{{ report.stats.candidates_pending }}</strong></div>
+    <div class="metric"><span>当前持仓</span><strong>{{ report.stats.active_positions }}</strong></div>
+    <div class="metric"><span>已知基金</span><strong>{{ report.stats.known_funds }}</strong></div>
+  </div>
+  <p class="muted">检查时间：{{ report.checked_at }}</p>
+</section>
+
+{% if report.ok %}
+<section class="panel stack">
+  <h2>状态良好</h2>
+  <p class="muted">目前没有发现会明显影响账本精度的问题。</p>
+</section>
+{% else %}
+<section class="stack">
+  {% for issue in report.issues %}
+  <article class="panel health-issue health-{{ issue.severity }}">
+    <div>
+      <span class="badge">{{ issue.severity }}</span>
+      <h2>{{ issue.title }} · {{ issue.count }}</h2>
+      <p class="muted">{{ issue.detail }}</p>
+      {% if issue.codes %}
+      <p class="sample">{{ issue.codes|join(", ") }}{% if issue.count > issue.codes|length %} ...{% endif %}</p>
+      {% endif %}
+    </div>
+    <a class="btn" href="{{ issue.link }}">{{ issue.action }}</a>
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

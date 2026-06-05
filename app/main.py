@@ -35,6 +35,7 @@ from .models import (
     FundTransactionCandidate,
     ImportDocument,
     ImportStatus,
+    JobStatus,
     TransactionAction,
 )
 from .nav import sync_nav_for_fund
@@ -1504,6 +1505,182 @@ def dashboard(
         "dashboard.html",
         {"request": request, "summary": summary, "holdings": holdings[:5]},
     )
+
+
+def build_health_report(session: Session) -> dict[str, Any]:
+    today = date.today()
+    stale_before = today - timedelta(days=7)
+    candidates = session.exec(select(FundTransactionCandidate)).all()
+    transactions = session.exec(select(FundTransaction)).all()
+    imports = session.exec(select(ImportDocument)).all()
+    rules = {rule.fund_code: rule for rule in session.exec(select(FundRule)).all()}
+    jobs = session.exec(
+        select(BackgroundJob).order_by(desc(BackgroundJob.created_at)).limit(20)
+    ).all()
+    latest_nav = {}
+    for nav in session.exec(select(FundNav).order_by(FundNav.fund_code, desc(FundNav.nav_date))).all():
+        latest_nav.setdefault(nav.fund_code, nav)
+    positions = calculate_position_summaries(session)
+    active_positions = [item for item in positions if not item.is_closed]
+    known_codes = sorted(
+        {
+            item.fund_code
+            for item in [*transactions, *candidates]
+            if item.fund_code and item.fund_code != "000000"
+        }
+    )
+
+    issues: list[dict[str, Any]] = []
+
+    pending = [item for item in candidates if item.status == CandidateStatus.pending]
+    if pending:
+        issues.append(
+            {
+                "severity": "warn",
+                "title": "候选交易待确认",
+                "count": len(pending),
+                "detail": "这些记录还没有进入正式流水，持仓和收益不会计算它们。",
+                "link": "/candidates?status=pending",
+                "action": "去确认",
+            }
+        )
+
+    unmatched = [
+        item
+        for item in pending
+        if item.fund_code == "000000" or not item.fund_name or item.fund_name in {"00", "未知基金", "未知"}
+    ]
+    if unmatched:
+        issues.append(
+            {
+                "severity": "danger",
+                "title": "候选交易基金未匹配",
+                "count": len(unmatched),
+                "detail": "这些记录的基金代码或名称不可靠，确认前需要先修正。",
+                "link": "/candidates?status=pending&unmatched=1",
+                "action": "去修正",
+            }
+        )
+
+    low_confidence = [item for item in pending if (item.confidence or 0) < 0.75]
+    if low_confidence:
+        issues.append(
+            {
+                "severity": "warn",
+                "title": "候选交易置信度偏低",
+                "count": len(low_confidence),
+                "detail": "建议人工核对金额、份额、净值和提交时间。",
+                "link": "/candidates?status=pending&quality=review",
+                "action": "去核对",
+            }
+        )
+
+    failed_imports = [item for item in imports if item.status == ImportStatus.error]
+    if failed_imports:
+        issues.append(
+            {
+                "severity": "danger",
+                "title": "导入文档失败",
+                "count": len(failed_imports),
+                "detail": "失败文档不会继续 OCR 或解析，需要重跑或查看错误。",
+                "link": "/imports",
+                "action": "看导入",
+            }
+        )
+
+    failed_jobs = [item for item in jobs if item.status == JobStatus.error]
+    if failed_jobs:
+        issues.append(
+            {
+                "severity": "warn",
+                "title": "后台任务失败",
+                "count": len(failed_jobs),
+                "detail": "最近后台任务里有失败项，可能影响 OCR、解析或净值同步。",
+                "link": "/nav",
+                "action": "看任务",
+            }
+        )
+
+    missing_rules = [code for code in known_codes if code not in rules or not rules[code].fund_name]
+    if missing_rules:
+        issues.append(
+            {
+                "severity": "warn",
+                "title": "基金规则不完整",
+                "count": len(missing_rules),
+                "detail": "缺少规则会影响确认日、申购费、赎回费和货币基金识别。",
+                "link": "/fund-rules",
+                "action": "同步规则",
+                "codes": missing_rules[:8],
+            }
+        )
+
+    stale_nav_codes = []
+    for item in active_positions:
+        if is_money_fund(session, item.fund_code):
+            continue
+        nav = latest_nav.get(item.fund_code)
+        if not nav or nav.nav_date < stale_before:
+            stale_nav_codes.append(item.fund_code)
+    if stale_nav_codes:
+        issues.append(
+            {
+                "severity": "warn",
+                "title": "当前持仓净值缺失或过旧",
+                "count": len(stale_nav_codes),
+                "detail": "净值过旧会让主界面收益和收益率不准。",
+                "link": "/nav",
+                "action": "同步净值",
+                "codes": stale_nav_codes[:8],
+            }
+        )
+
+    incomplete_transactions = []
+    for tx in transactions:
+        if tx.fund_code == "000000" or not tx.fund_name:
+            incomplete_transactions.append(tx)
+            continue
+        if tx.action in {TransactionAction.buy, TransactionAction.sell, TransactionAction.dividend_reinvest}:
+            if tx.share is None or tx.nav is None:
+                incomplete_transactions.append(tx)
+        elif tx.action == TransactionAction.dividend and tx.amount_cny is None:
+            incomplete_transactions.append(tx)
+    if incomplete_transactions:
+        issues.append(
+            {
+                "severity": "danger",
+                "title": "正式流水字段不完整",
+                "count": len(incomplete_transactions),
+                "detail": "正式流水缺字段会直接影响持仓、收益和曲线。",
+                "link": "/transactions",
+                "action": "修流水",
+            }
+        )
+
+    severity_order = {"danger": 0, "warn": 1, "info": 2}
+    issues.sort(key=lambda item: (severity_order.get(item["severity"], 9), item["title"]))
+    return {
+        "issues": issues,
+        "stats": {
+            "transactions": len(transactions),
+            "candidates_pending": len(pending),
+            "imports_failed": len(failed_imports),
+            "active_positions": len(active_positions),
+            "known_funds": len(known_codes),
+        },
+        "ok": not issues,
+        "checked_at": datetime.utcnow(),
+    }
+
+
+@app.get("/health", response_class=HTMLResponse)
+def health_page(
+    request: Request,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    report = build_health_report(session)
+    return templates.TemplateResponse("health.html", {"request": request, "report": report})
 
 
 @app.head("/")

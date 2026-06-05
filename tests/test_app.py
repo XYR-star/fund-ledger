@@ -641,6 +641,71 @@ async def test_backup_export(client):
     assert data["benchmark_nav"][0]["benchmark_code"] == "000300"
 
 
+async def test_health_page_reports_data_quality_issues(client):
+    await login(client)
+    import app.db
+    from app.models import (
+        BackgroundJob,
+        CandidateStatus,
+        FundNav,
+        FundRule,
+        FundTransaction,
+        FundTransactionCandidate,
+        ImportDocument,
+        ImportStatus,
+        JobStatus,
+        TransactionAction,
+    )
+
+    with Session(app.db.engine) as session:
+        session.add(FundRule(fund_code="161725", fund_name="招商中证白酒", buy_fee_rate=0.0))
+        session.add(
+            FundTransaction(
+                fund_code="161725",
+                fund_name="招商中证白酒",
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=1000,
+                share=500,
+                nav=2,
+            )
+        )
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="",
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.buy,
+                amount_cny=500,
+            )
+        )
+        session.add(
+            FundTransactionCandidate(
+                status=CandidateStatus.pending,
+                fund_code="000000",
+                fund_name="未知基金",
+                trade_date=date(2024, 1, 4),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                confidence=0.3,
+            )
+        )
+        session.add(ImportDocument(file_name="bad.png", status=ImportStatus.error, error_message="ocr failed"))
+        session.add(BackgroundJob(job_type="sync_nav", status=JobStatus.error, error_message="offline"))
+        session.commit()
+
+    page = await client.get("/health")
+    assert page.status_code == 200
+    assert "数据体检" in page.text
+    assert "候选交易基金未匹配" in page.text
+    assert "导入文档失败" in page.text
+    assert "后台任务失败" in page.text
+    assert "当前持仓净值缺失或过旧" in page.text
+    assert "正式流水字段不完整" in page.text
+    assert "/backup" in page.text
+
+
 async def test_ocr_import_to_candidate_flow(client, monkeypatch):
     import app.main
     from app.ocr import OcrResult
