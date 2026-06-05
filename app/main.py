@@ -1,9 +1,12 @@
 import json
 import re
+import threading
+import time as time_module
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -44,6 +47,7 @@ from .templates import templates
 app = FastAPI(title="Fund Ledger")
 add_session_middleware(app)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+_scheduler_started = False
 
 
 @app.on_event("startup")
@@ -52,6 +56,7 @@ def on_startup() -> None:
     register_background_jobs()
     normalize_money_fund_records()
     recover_interrupted_jobs()
+    start_daily_market_sync_scheduler()
 
 
 def register_background_jobs() -> None:
@@ -61,6 +66,56 @@ def register_background_jobs() -> None:
     register_job("sync_nav", process_nav_job)
     register_job("sync_benchmark", process_benchmark_job)
     register_job("sync_fund_rule", process_fund_rule_sync_job)
+    register_job("daily_market_sync", process_daily_market_sync_job)
+
+
+def start_daily_market_sync_scheduler() -> None:
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+    thread = threading.Thread(
+        target=daily_market_sync_scheduler_loop,
+        name="fund-ledger-daily-market-sync",
+        daemon=True,
+    )
+    thread.start()
+
+
+def daily_market_sync_scheduler_loop() -> None:
+    while True:
+        try:
+            maybe_enqueue_daily_market_sync()
+        except Exception:
+            pass
+        time_module.sleep(60)
+
+
+def maybe_enqueue_daily_market_sync(now: datetime | None = None) -> BackgroundJob | None:
+    with Session(engine) as session:
+        config = runtime_settings(session)
+        if config.get("AUTO_MARKET_SYNC_ENABLED", "true") != "true":
+            return None
+        tz_name = config.get("AUTO_MARKET_SYNC_TIMEZONE", "Asia/Shanghai") or "Asia/Shanghai"
+        try:
+            tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            tz = ZoneInfo("Asia/Shanghai")
+            tz_name = "Asia/Shanghai"
+        now = now.astimezone(tz) if now else datetime.now(tz)
+        target_time = parse_optional_time_value(config.get("AUTO_MARKET_SYNC_TIME")) or time(21, 30)
+        if now.hour != target_time.hour or now.minute != target_time.minute:
+            return None
+        today_key = now.date().isoformat()
+        if config.get("AUTO_MARKET_SYNC_LAST_RUN_DATE") == today_key:
+            return None
+        job = create_and_enqueue(
+            session,
+            "daily_market_sync",
+            {"date": today_key, "timezone": tz_name, "scheduled_time": target_time.strftime("%H:%M")},
+        )
+        save_settings(session, {"AUTO_MARKET_SYNC_LAST_RUN_DATE": today_key})
+        return job
 
 
 def require_user(request: Request) -> str:
@@ -1151,6 +1206,26 @@ def process_benchmark_job(payload: dict[str, Any]) -> str:
         return f"沪深300同步完成，新增 {inserted} 条"
 
 
+def process_daily_market_sync_job(payload: dict[str, Any]) -> str:
+    with Session(engine) as session:
+        fund_codes = current_holding_fund_codes(session)
+        if not fund_codes:
+            return "每日同步完成：当前无持仓基金"
+        errors = sync_related_market_data(session, fund_codes)
+        message = f"每日同步完成：持仓基金 {', '.join(sorted(fund_codes))}"
+        if errors:
+            message += "；" + "；".join(errors)
+        return message
+
+
+def current_holding_fund_codes(session: Session) -> set[str]:
+    return {
+        item.fund_code
+        for item in calculate_position_summaries(session)
+        if not item.is_closed and item.fund_code != "000000"
+    }
+
+
 def process_fund_rule_sync_job(payload: dict[str, Any]) -> str:
     code = str(payload["fund_code"]).zfill(6)
     synced = fetch_fund_rule_from_akshare(code)
@@ -1440,6 +1515,9 @@ def settings_update(
     baidu_ocr_api_key: str = Form(""),
     baidu_ocr_secret_key: str = Form(""),
     baidu_ocr_endpoint: str = Form("https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic"),
+    auto_market_sync_enabled: str = Form("off"),
+    auto_market_sync_time: str = Form("21:30"),
+    auto_market_sync_timezone: str = Form("Asia/Shanghai"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -1463,6 +1541,9 @@ def settings_update(
         or current.get("BAIDU_OCR_SECRET_KEY", ""),
         "BAIDU_OCR_ENDPOINT": baidu_ocr_endpoint.strip()
         or "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic",
+        "AUTO_MARKET_SYNC_ENABLED": "true" if auto_market_sync_enabled == "on" else "false",
+        "AUTO_MARKET_SYNC_TIME": auto_market_sync_time.strip() or "21:30",
+        "AUTO_MARKET_SYNC_TIMEZONE": auto_market_sync_timezone.strip() or "Asia/Shanghai",
     }
     save_settings(session, values)
     return redirect("/settings?message=设置已保存")
@@ -2704,7 +2785,7 @@ def nav_page(
     }
     jobs = session.exec(
         select(BackgroundJob)
-        .where(BackgroundJob.job_type == "sync_nav")
+        .where(BackgroundJob.job_type.in_(["sync_nav", "daily_market_sync"]))
         .order_by(desc(BackgroundJob.created_at))
         .limit(5)
     ).all()
@@ -2721,6 +2802,15 @@ def nav_sync(
 ):
     job = create_and_enqueue(session, "sync_nav", {"fund_code": fund_code.zfill(6)})
     return redirect(f"/nav?message=净值同步已加入后台任务 #{job.id}")
+
+
+@app.post("/nav/sync-current")
+def nav_sync_current(
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    job = create_and_enqueue(session, "daily_market_sync", {"manual": True})
+    return redirect(f"/nav?message=当前持仓和曲线同步已加入后台任务 #{job.id}")
 
 
 @app.get("/backup", response_class=HTMLResponse)

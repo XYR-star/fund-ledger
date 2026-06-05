@@ -32,6 +32,10 @@ DEFAULTS = {
     "BAIDU_OCR_API_KEY": "",
     "BAIDU_OCR_SECRET_KEY": "",
     "BAIDU_OCR_ENDPOINT": "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic",
+    "AUTO_MARKET_SYNC_ENABLED": "true",
+    "AUTO_MARKET_SYNC_TIME": "21:30",
+    "AUTO_MARKET_SYNC_TIMEZONE": "Asia/Shanghai",
+    "AUTO_MARKET_SYNC_LAST_RUN_DATE": "",
 }
 
 

@@ -826,6 +826,9 @@ async def test_settings_page_saves_runtime_config(client):
             "baidu_ocr_api_key": "",
             "baidu_ocr_secret_key": "",
             "baidu_ocr_endpoint": "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic",
+            "auto_market_sync_enabled": "on",
+            "auto_market_sync_time": "21:30",
+            "auto_market_sync_timezone": "Asia/Shanghai",
         },
         follow_redirects=False,
     )
@@ -837,6 +840,52 @@ async def test_settings_page_saves_runtime_config(client):
     assert "ocr-secret" not in page.text
     assert "末尾 cret" in page.text
     assert "已启用且已配置" in page.text
+    assert "21:30" in page.text
+    assert "Asia/Shanghai" in page.text
+
+
+async def test_daily_market_sync_scheduler_enqueues_once(client, monkeypatch):
+    import app.db
+    import app.main
+    from app.app_settings import runtime_settings, save_settings
+    from app.models import BackgroundJob
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    await login(client)
+    calls = []
+
+    def fake_create_and_enqueue(session, job_type, payload):
+        calls.append((job_type, payload))
+        return BackgroundJob(id=99, job_type=job_type)
+
+    monkeypatch.setattr(app.main, "create_and_enqueue", fake_create_and_enqueue)
+    with Session(app.db.engine) as session:
+        save_settings(
+            session,
+            {
+                "AUTO_MARKET_SYNC_ENABLED": "true",
+                "AUTO_MARKET_SYNC_TIME": "21:30",
+                "AUTO_MARKET_SYNC_TIMEZONE": "Asia/Shanghai",
+                "AUTO_MARKET_SYNC_LAST_RUN_DATE": "",
+            },
+        )
+
+    now = datetime(2026, 6, 5, 21, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    job = app.main.maybe_enqueue_daily_market_sync(now)
+    assert job.id == 99
+    assert calls == [("daily_market_sync", {"date": "2026-06-05", "timezone": "Asia/Shanghai", "scheduled_time": "21:30"})]
+    with Session(app.db.engine) as session:
+        assert runtime_settings(session)["AUTO_MARKET_SYNC_LAST_RUN_DATE"] == "2026-06-05"
+    assert app.main.maybe_enqueue_daily_market_sync(now) is None
+
+
+async def test_nav_sync_current_creates_daily_job(client):
+    await login(client)
+    response = await client.post("/nav/sync-current", follow_redirects=False)
+    assert response.status_code == 303
+    page = await wait_for_text(client, "/nav", "daily_market_sync")
+    assert "当前持仓和曲线同步" in page.text or "daily_market_sync" in page.text
 
 
 async def test_import_archive_delete_restore(client):

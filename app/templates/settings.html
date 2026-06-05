@@ -108,6 +108,28 @@
     </div>
   </section>
 
+  <section class="panel stack">
+    <h2>自动净值与曲线更新</h2>
+    <div class="form-grid">
+      <label>启用
+        <select name="auto_market_sync_enabled">
+          <option value="on" {% if config.AUTO_MARKET_SYNC_ENABLED == "true" %}selected{% endif %}>启动</option>
+          <option value="off" {% if config.AUTO_MARKET_SYNC_ENABLED != "true" %}selected{% endif %}>停止</option>
+        </select>
+      </label>
+      <label>每日时间
+        <input type="time" name="auto_market_sync_time" value="{{ config.AUTO_MARKET_SYNC_TIME }}">
+      </label>
+      <label>时区
+        <input name="auto_market_sync_timezone" value="{{ config.AUTO_MARKET_SYNC_TIMEZONE }}">
+      </label>
+      <label>上次自动运行
+        <input value="{{ config.AUTO_MARKET_SYNC_LAST_RUN_DATE or '暂无' }}" disabled>
+      </label>
+    </div>
+    <p class="muted">自动任务会同步当前未清仓持仓基金的净值，并刷新收益曲线使用的沪深300基准。</p>
+  </section>
+
   <div class="actions">
     <button class="btn primary" type="submit">保存设置</button>
   </div>

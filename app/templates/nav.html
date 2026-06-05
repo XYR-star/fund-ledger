@@ -4,11 +4,17 @@
 <div class="page-title">
   <div>
     <h1>净值同步</h1>
-    <p class="muted">使用 efinance 获取历史净值。</p>
+    <p class="muted">使用 efinance 获取历史净值；当前持仓可每日自动同步，并刷新收益曲线基准。</p>
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
 <section class="panel stack">
+  <div class="actions">
+    <form method="post" action="/nav/sync-current">
+      <button class="btn primary" type="submit">同步当前持仓和曲线</button>
+    </form>
+    <a class="btn" href="/settings">设置每日自动同步</a>
+  </div>
   <form class="form-grid" method="post" action="/nav/sync">
     <label>基金代码
       <input name="fund_code" placeholder="161725" required>
@@ -21,11 +27,12 @@
   <h2>后台任务</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>ID</th><th>状态</th><th>结果</th><th>时间</th></tr></thead>
+      <thead><tr><th>ID</th><th>类型</th><th>状态</th><th>结果</th><th>时间</th></tr></thead>
       <tbody>
         {% for job in jobs %}
         <tr>
           <td>{{ job.id }}</td>
+          <td>{{ job.job_type }}</td>
           <td><span class="badge">{{ job.status.value }}</span></td>
           <td>{{ job.result_message or job.error_message or "-" }}</td>
           <td>{{ job.finished_at or job.started_at or job.created_at }}</td>
