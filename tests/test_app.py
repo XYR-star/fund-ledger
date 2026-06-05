@@ -706,6 +706,64 @@ async def test_health_page_reports_data_quality_issues(client):
     assert "/backup" in page.text
 
 
+async def test_health_page_flags_qdii_short_confirm_days_not_hk_connect(client):
+    await login(client)
+    import app.db
+    from app.models import FundNav, FundRule, FundTransaction, TransactionAction
+
+    with Session(app.db.engine) as session:
+        session.add(
+            FundRule(
+                fund_code="013308",
+                fund_name="易方达恒生科技ETF联接(QDII)A",
+                fund_type="指数型-海外股票",
+                buy_confirm_days=1,
+                sell_confirm_days=1,
+                sync_source="akshare",
+            )
+        )
+        session.add(
+            FundRule(
+                fund_code="021457",
+                fund_name="易方达恒生港股通高股息低波动ETF联接发起式A",
+                fund_type="指数型-股票",
+                buy_confirm_days=1,
+                sell_confirm_days=1,
+                sync_source="akshare",
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="013308",
+                fund_name="易方达恒生科技ETF联接(QDII)A",
+                trade_date=date(2025, 7, 18),
+                action=TransactionAction.buy,
+                amount_cny=50,
+                share=36.39,
+                nav=1.3741,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="021457",
+                fund_name="易方达恒生港股通高股息低波动ETF联接发起式A",
+                trade_date=date(2025, 7, 18),
+                action=TransactionAction.buy,
+                amount_cny=50,
+                share=39.93,
+                nav=1.2523,
+            )
+        )
+        session.add(FundNav(fund_code="013308", nav_date=date(2026, 6, 5), unit_nav=1.1646))
+        session.add(FundNav(fund_code="021457", nav_date=date(2026, 6, 5), unit_nav=1.2391))
+        session.commit()
+
+    page = await client.get("/health")
+    assert "QDII/海外基金确认日需核对" in page.text
+    assert "013308" in page.text
+    assert "021457" not in page.text
+
+
 async def test_ocr_import_to_candidate_flow(client, monkeypatch):
     import app.main
     from app.ocr import OcrResult

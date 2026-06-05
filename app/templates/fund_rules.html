@@ -64,6 +64,10 @@
         <span class="badge">卖出 T+{{ rule.sell_confirm_days }}</span>
         <span class="badge">{{ rule.cutoff_time }}</span>
         <span class="badge">买入费率 {{ "%.4f"|format(rule.buy_fee_rate) }}</span>
+        {% set rule_text = ((rule.fund_name or '') ~ ' ' ~ (rule.fund_type or ''))|upper %}
+        {% if ('QDII' in rule_text or '海外' in rule_text or '全球' in rule_text or '纳斯达克' in rule_text or '标普' in rule_text or '美国' in rule_text) and (rule.buy_confirm_days <= 1 or rule.sell_confirm_days <= 1) %}
+        <span class="badge" style="background:var(--warn);color:#fff">海外确认日待核对</span>
+        {% endif %}
         {% if rule.sync_source %}<span class="badge">{{ rule.sync_source }}</span>{% endif %}
       </div>
       <button class="btn small" type="button" onclick="var d=this.parentElement.parentElement.querySelector('.rule-detail');if(d.style.display==='none'||!d.style.display){d.style.display='block';this.textContent='收起'}else{d.style.display='none';this.textContent='展开'}">展开</button>

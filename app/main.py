@@ -1678,6 +1678,46 @@ def build_health_report(session: Session) -> dict[str, Any]:
             }
         )
 
+    qdii_short_confirm = [
+        rule.fund_code
+        for rule in rules.values()
+        if is_qdii_like_rule(rule)
+        and rule.fund_code in known_codes
+        and (rule.buy_confirm_days <= 1 or rule.sell_confirm_days <= 1)
+    ]
+    if qdii_short_confirm:
+        issues.append(
+            {
+                "severity": "warn",
+                "title": "QDII/海外基金确认日需核对",
+                "count": len(qdii_short_confirm),
+                "detail": "海外基金常见确认日比普通基金更晚；如果规则仍是 T+1，导入时可能提前取净值。",
+                "link": "/fund-rules",
+                "action": "核对规则",
+                "codes": qdii_short_confirm[:8],
+            }
+        )
+
+    qdii_unsynced = [
+        rule.fund_code
+        for rule in rules.values()
+        if is_qdii_like_rule(rule)
+        and rule.fund_code in known_codes
+        and not rule.sync_source
+    ]
+    if qdii_unsynced:
+        issues.append(
+            {
+                "severity": "warn",
+                "title": "QDII/海外基金规则未同步",
+                "count": len(qdii_unsynced),
+                "detail": "未同步规则时会沿用默认确认日和费率，建议先自动查询再人工核对。",
+                "link": "/fund-rules",
+                "action": "同步规则",
+                "codes": qdii_unsynced[:8],
+            }
+        )
+
     stale_nav_codes = []
     for item in active_positions:
         if is_money_fund(session, item.fund_code):
@@ -1734,6 +1774,13 @@ def build_health_report(session: Session) -> dict[str, Any]:
         "ok": not issues,
         "checked_at": datetime.utcnow(),
     }
+
+
+def is_qdii_like_rule(rule: FundRule) -> bool:
+    text = f"{rule.fund_name or ''} {rule.fund_type or ''}".upper()
+    if "港股通" in text and "QDII" not in text and "海外" not in text:
+        return False
+    return any(word in text for word in ("QDII", "海外", "全球", "纳斯达克", "标普", "美国"))
 
 
 @app.get("/health", response_class=HTMLResponse)
