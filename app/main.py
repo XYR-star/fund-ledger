@@ -1139,47 +1139,54 @@ def fund_codes_for_source(session: Session, source_hash: str | None) -> set[str]
     }
 
 
-def sync_related_market_data(session: Session, fund_codes: set[str]) -> list[str]:
+def sync_related_market_data(
+    session: Session,
+    fund_codes: set[str],
+    *,
+    sync_rules: bool = True,
+    nav_pz: int = 40000,
+) -> list[str]:
     errors = []
     for code in sorted(fund_codes):
-        try:
-            existing_rule = session.get(FundRule, code)
-            if not existing_rule or existing_rule.sync_source not in {"manual", "user"}:
-                synced = fetch_fund_rule_from_akshare(code)
-                rule = existing_rule or FundRule(fund_code=code)
-                rule.fund_name = synced.fund_name or rule.fund_name
-                if synced.buy_confirm_days is not None:
-                    rule.buy_confirm_days = synced.buy_confirm_days
-                if synced.sell_confirm_days is not None:
-                    rule.sell_confirm_days = synced.sell_confirm_days
-                rule.cutoff_time = synced.cutoff_time or rule.cutoff_time or "15:00"
-                if synced.buy_fee_rate is not None:
-                    rule.buy_fee_rate = synced.buy_fee_rate
-                rule.sync_source = synced.source
-                rule.synced_at = sync_timestamp()
-                rule.fund_type = synced.fund_type or rule.fund_type
-                rule.updated_at = datetime.utcnow()
-                session.add(rule)
-                if synced.fee_tiers:
-                    for tier in session.exec(select(FundFeeTier).where(FundFeeTier.fund_code == code)).all():
-                        session.delete(tier)
-                    for min_days, max_days, rate in synced.fee_tiers:
-                        session.add(
-                            FundFeeTier(
-                                fund_code=code,
-                                min_holding_days=min_days,
-                                max_holding_days=max_days,
-                                redemption_fee_rate=rate,
-                                updated_at=datetime.utcnow(),
+        if sync_rules:
+            try:
+                existing_rule = session.get(FundRule, code)
+                if not existing_rule or existing_rule.sync_source not in {"manual", "user"}:
+                    synced = fetch_fund_rule_from_akshare(code)
+                    rule = existing_rule or FundRule(fund_code=code)
+                    rule.fund_name = synced.fund_name or rule.fund_name
+                    if synced.buy_confirm_days is not None:
+                        rule.buy_confirm_days = synced.buy_confirm_days
+                    if synced.sell_confirm_days is not None:
+                        rule.sell_confirm_days = synced.sell_confirm_days
+                    rule.cutoff_time = synced.cutoff_time or rule.cutoff_time or "15:00"
+                    if synced.buy_fee_rate is not None:
+                        rule.buy_fee_rate = synced.buy_fee_rate
+                    rule.sync_source = synced.source
+                    rule.synced_at = sync_timestamp()
+                    rule.fund_type = synced.fund_type or rule.fund_type
+                    rule.updated_at = datetime.utcnow()
+                    session.add(rule)
+                    if synced.fee_tiers:
+                        for tier in session.exec(select(FundFeeTier).where(FundFeeTier.fund_code == code)).all():
+                            session.delete(tier)
+                        for min_days, max_days, rate in synced.fee_tiers:
+                            session.add(
+                                FundFeeTier(
+                                    fund_code=code,
+                                    min_holding_days=min_days,
+                                    max_holding_days=max_days,
+                                    redemption_fee_rate=rate,
+                                    updated_at=datetime.utcnow(),
+                                )
                             )
-                        )
-                session.commit()
-                if "货币" in (rule.fund_type or ""):
-                    normalize_money_fund_records()
-        except Exception as exc:
-            errors.append(f"{code} 规则同步失败：{exc}")
+                    session.commit()
+                    if "货币" in (rule.fund_type or ""):
+                        normalize_money_fund_records()
+            except Exception as exc:
+                errors.append(f"{code} 规则同步失败：{exc}")
 
-        inserted, error = sync_nav_for_fund(session, code)
+        inserted, error = sync_nav_for_fund(session, code, pz=nav_pz)
         if error:
             errors.append(f"{code} 净值同步失败：{error}")
 
@@ -1211,7 +1218,7 @@ def process_daily_market_sync_job(payload: dict[str, Any]) -> str:
         fund_codes = current_holding_fund_codes(session)
         if not fund_codes:
             return "每日同步完成：当前无持仓基金"
-        errors = sync_related_market_data(session, fund_codes)
+        errors = sync_related_market_data(session, fund_codes, sync_rules=False, nav_pz=90)
         message = f"每日同步完成：持仓基金 {', '.join(sorted(fund_codes))}"
         if errors:
             message += "；" + "；".join(errors)

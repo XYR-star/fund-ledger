@@ -5,37 +5,50 @@ from sqlmodel import Session, select
 from .models import FundNav
 
 
-def sync_nav_for_fund(session: Session, fund_code: str) -> tuple[int, str | None]:
+def sync_nav_for_fund(session: Session, fund_code: str, pz: int = 40000) -> tuple[int, str | None]:
     try:
         import efinance as ef
 
-        df = ef.fund.get_quote_history(fund_code)
+        df = ef.fund.get_quote_history(fund_code, pz=pz)
     except Exception as exc:  # pragma: no cover - network/source dependent
         return 0, str(exc)
 
     if df is None or df.empty:
         return 0, "empty nav response"
 
-    inserted = 0
+    rows = []
     for _, row in df.iterrows():
         nav_date = _parse_date(row.get("净值日期") or row.get("日期"))
-        if nav_date is None:
-            continue
         unit_nav = _parse_float(row.get("单位净值"))
-        if unit_nav is None:
+        if nav_date is None or unit_nav is None:
             continue
-        existing = session.exec(
+        rows.append(
+            (
+                nav_date,
+                {
+                    "unit_nav": unit_nav,
+                    "accumulated_nav": _parse_float(row.get("累计净值")),
+                    "daily_return": _parse_percent(row.get("涨跌幅")),
+                    "updated_at": datetime.utcnow(),
+                },
+            )
+        )
+    if not rows:
+        return 0, "empty nav response"
+
+    dates = [item[0] for item in rows]
+    existing_by_date = {
+        item.nav_date: item
+        for item in session.exec(
             select(FundNav).where(
                 FundNav.fund_code == fund_code,
-                FundNav.nav_date == nav_date,
+                FundNav.nav_date.in_(dates),
             )
-        ).first()
-        values = {
-            "unit_nav": unit_nav,
-            "accumulated_nav": _parse_float(row.get("累计净值")),
-            "daily_return": _parse_percent(row.get("涨跌幅")),
-            "updated_at": datetime.utcnow(),
-        }
+        ).all()
+    }
+    inserted = 0
+    for nav_date, values in rows:
+        existing = existing_by_date.get(nav_date)
         if existing:
             for key, value in values.items():
                 setattr(existing, key, value)

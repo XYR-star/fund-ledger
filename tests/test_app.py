@@ -1508,6 +1508,76 @@ async def test_fix_unmatched_keeps_candidate_update_when_rule_sync_fails(client,
         assert candidate.confidence == 0.8
 
 
+async def test_sync_nav_uses_pz_and_upserts_existing_dates(client, monkeypatch):
+    import sys
+    import types
+    import pandas as pd
+    import app.db
+    from app.models import FundNav
+    from app.nav import sync_nav_for_fund
+
+    calls = []
+
+    class FakeFund:
+        @staticmethod
+        def get_quote_history(fund_code, pz=40000):
+            calls.append((fund_code, pz))
+            return pd.DataFrame(
+                [
+                    {"日期": "2024-01-02", "单位净值": "2.1000", "累计净值": "2.1000", "涨跌幅": "1.00"},
+                    {"日期": "2024-01-03", "单位净值": "2.2000", "累计净值": "2.2000", "涨跌幅": "2.00"},
+                ]
+            )
+
+    monkeypatch.setitem(sys.modules, "efinance", types.SimpleNamespace(fund=FakeFund))
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.commit()
+        inserted, error = sync_nav_for_fund(session, "161725", pz=90)
+        navs = session.exec(select(FundNav).order_by(FundNav.nav_date)).all()
+
+    assert error is None
+    assert inserted == 1
+    assert calls == [("161725", 90)]
+    assert [(item.nav_date, item.unit_nav) for item in navs] == [
+        (date(2024, 1, 2), 2.1),
+        (date(2024, 1, 3), 2.2),
+    ]
+
+
+async def test_daily_market_sync_uses_fast_nav_without_rule_sync(client, monkeypatch):
+    import app.main
+    import app.db
+    from app.models import FundTransaction, TransactionAction
+
+    await login(client)
+    calls = []
+    monkeypatch.setattr(
+        app.main,
+        "fetch_fund_rule_from_akshare",
+        lambda code: (_ for _ in ()).throw(RuntimeError("rule sync should be skipped")),
+    )
+    monkeypatch.setattr(app.main, "sync_nav_for_fund", lambda session, code, pz=40000: calls.append((code, pz)) or (1, None))
+    monkeypatch.setattr(app.main, "sync_hs300", lambda session: (1, None))
+    with Session(app.db.engine) as session:
+        session.add(
+            FundTransaction(
+                fund_code="161725",
+                fund_name="招商中证白酒",
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=50,
+                nav=2,
+            )
+        )
+        session.commit()
+
+    message = app.main.process_daily_market_sync_job({})
+    assert "每日同步完成" in message
+    assert calls == [("161725", 90)]
+
+
 async def test_failed_minimal_order_is_ignored(client):
     await login(client)
     await client.post(
