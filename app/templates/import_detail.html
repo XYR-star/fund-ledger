@@ -43,6 +43,9 @@
       <input type="hidden" name="use_llm" value="true">
       <button class="btn" type="submit" {% if not llm_configured %}disabled{% endif %}>DeepSeek 解析</button>
     </form>
+    <form method="post" action="/imports/{{ document.id }}/retry">
+      <button class="btn warn" type="submit">重跑自动导入</button>
+    </form>
   </div>
   {% if not llm_configured %}
   <p class="muted">DeepSeek 尚未配置。可在设置页保存 API Key 后直接使用。</p>
@@ -50,12 +53,27 @@
 	  <p class="muted">当前 OCR 后端：{{ ocr_backend }}。可在设置页切换本地 OCR 或 OCR API。</p>
 	</section>
 
+<section class="panel stack" style="margin-top:16px">
+  <h2>导入审计</h2>
+  <div class="metrics">
+    <div class="metric"><span>候选</span><strong>{{ audit.candidates }}</strong></div>
+    <div class="metric"><span>待确认</span><strong>{{ audit.pending }}</strong></div>
+    <div class="metric"><span>已确认</span><strong>{{ audit.confirmed }}</strong></div>
+    <div class="metric"><span>已忽略</span><strong>{{ audit.ignored }}</strong></div>
+    <div class="metric"><span>未匹配</span><strong>{{ audit.unmatched }}</strong></div>
+    <div class="metric"><span>正式流水</span><strong>{{ audit.transactions }}</strong></div>
+  </div>
+  {% if audit.duplicate_candidates %}
+  <p class="muted">发现 {{ audit.duplicate_candidates }} 组同文件疑似重复候选，确认时会自动跳过重复入账。</p>
+  {% endif %}
+</section>
+
 {% if jobs %}
 <section class="panel stack" style="margin-top:16px">
   <h2>后台任务</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>ID</th><th>类型</th><th>状态</th><th>结果</th><th>时间</th></tr></thead>
+      <thead><tr><th>ID</th><th>类型</th><th>状态</th><th>结果</th><th>时间</th><th>操作</th></tr></thead>
       <tbody>
         {% for job in jobs %}
         <tr>
@@ -64,6 +82,15 @@
           <td><span class="badge">{{ job.status.value }}</span></td>
           <td>{{ job.result_message or job.error_message or "-" }}</td>
           <td>{{ job.finished_at or job.started_at or job.created_at }}</td>
+          <td>
+            {% if job.status.value == "error" %}
+            <form method="post" action="/imports/{{ document.id }}/retry">
+              <button class="btn warn" type="submit">重跑</button>
+            </form>
+            {% else %}
+            <span class="muted">-</span>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>

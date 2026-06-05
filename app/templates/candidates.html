@@ -39,6 +39,9 @@
   <section class="panel stack">
     <div class="actions">
       <span class="badge">{{ c.status }}</span>
+      {% if c.id in duplicate_candidate_ids %}
+      <span class="badge" style="background:var(--warn);color:#fff">疑似重复</span>
+      {% endif %}
       <strong>{{ c.fund_code }} {{ c.fund_name }}</strong>
       <span class="muted">{{ c.raw_text }}</span>
     </div>

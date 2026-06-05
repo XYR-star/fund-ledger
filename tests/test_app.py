@@ -165,6 +165,32 @@ async def test_confirm_all_deduplicates_identical_source_candidates(client):
     assert {candidate.confirmed_transaction_id for candidate in candidates} == {transactions[0].id}
 
 
+async def test_candidates_page_marks_duplicate_pending_candidates(client):
+    import app.db
+    from app.models import CandidateStatus, FundTransactionCandidate, TransactionAction
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        for _ in range(2):
+            session.add(
+                FundTransactionCandidate(
+                    status=CandidateStatus.pending,
+                    fund_code="161725",
+                    fund_name="招商中证白酒",
+                    trade_date=date(2024, 1, 2),
+                    action=TransactionAction.buy,
+                    amount_cny=100,
+                    share=50,
+                    nav=2,
+                    source_file="/tmp/same.png",
+                )
+            )
+        session.commit()
+
+    page = await client.get("/candidates")
+    assert page.text.count("疑似重复") == 2
+
+
 async def test_ignore_candidate_does_not_create_transaction(client):
     await login(client)
     await client.post(
@@ -433,6 +459,51 @@ async def test_batch_upload_auto_imports_multiple_files(client, monkeypatch):
     page = await wait_for_text(client, "/candidates", "161725")
     assert "161725" in page.text
     assert "005827" in page.text
+
+
+async def test_import_detail_shows_audit_and_retry_reparses(client):
+    import app.db
+    from app.models import CandidateStatus, FundTransactionCandidate, ImportDocument, ImportStatus, TransactionAction
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        document = ImportDocument(
+            file_name="retry.txt",
+            source_hash="retry-source",
+            ocr_text="2024-01-02 161725 招商中证白酒 buy 1000 500 2.0000 0",
+            status=ImportStatus.error,
+            error_message="old failure",
+        )
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        session.add(
+            FundTransactionCandidate(
+                status=CandidateStatus.pending,
+                fund_code="000000",
+                fund_name="旧候选",
+                trade_date=date(2024, 1, 1),
+                action=TransactionAction.buy,
+                amount_cny=1,
+                source_hash=document.source_hash,
+            )
+        )
+        session.commit()
+        document_id = document.id
+
+    detail = await client.get(f"/imports/{document_id}")
+    assert "导入审计" in detail.text
+    assert "待确认" in detail.text
+    assert "未匹配" in detail.text
+
+    response = await client.post(f"/imports/{document_id}/retry", follow_redirects=False)
+    assert response.status_code == 303
+    await wait_for_text(client, "/candidates", "161725")
+
+    with Session(app.db.engine) as session:
+        candidates = session.exec(select(FundTransactionCandidate)).all()
+    assert len(candidates) == 1
+    assert candidates[0].fund_code == "161725"
 
 
 async def test_auto_import_similarity_message_does_not_crash(client, tmp_path, monkeypatch):

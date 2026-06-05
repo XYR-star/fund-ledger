@@ -1608,11 +1608,13 @@ def import_detail_page(
         .order_by(desc(BackgroundJob.created_at))
         .limit(5)
     ).all()
+    audit = import_audit(session, document)
     return templates.TemplateResponse(
         "import_detail.html",
         {
             "request": request,
             "document": document,
+            "audit": audit,
             "message": message,
             "llm_configured": is_deepseek_configured(config),
             "ocr_backend": config.get("OCR_BACKEND", "rapidocr"),
@@ -1733,6 +1735,74 @@ def import_parse(
     return redirect(f"/imports/{document_id}?message=解析已加入后台任务 #{job.id}")
 
 
+@app.post("/imports/{document_id}/retry")
+def import_retry(
+    document_id: int,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    document = session.get(ImportDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=404)
+    cleared = clear_unconfirmed_candidates_for_document(session, document)
+    document.error_message = ""
+    document.status = ImportStatus.uploaded if document.source_file else ImportStatus.ocr_done
+    document.updated_at = datetime.utcnow()
+    session.add(document)
+    session.commit()
+    job = create_and_enqueue(session, "auto_import", {"document_id": document.id})
+    message = f"自动导入已重新加入后台任务 #{job.id}"
+    if cleared:
+        message += f"，已清理 {cleared} 条未确认候选"
+    return redirect(f"/imports/{document_id}?message={message}")
+
+
+def import_audit(session: Session, document: ImportDocument) -> dict[str, int]:
+    candidates = []
+    if document.source_hash:
+        candidates = session.exec(
+            select(FundTransactionCandidate).where(FundTransactionCandidate.source_hash == document.source_hash)
+        ).all()
+    transactions = []
+    if document.source_file:
+        transactions = session.exec(
+            select(FundTransaction).where(FundTransaction.source_file == document.source_file)
+        ).all()
+    return {
+        "candidates": len(candidates),
+        "pending": sum(1 for item in candidates if item.status == CandidateStatus.pending),
+        "confirmed": sum(1 for item in candidates if item.status == CandidateStatus.confirmed),
+        "ignored": sum(1 for item in candidates if item.status == CandidateStatus.ignored),
+        "unmatched": sum(1 for item in candidates if item.fund_code == "000000"),
+        "transactions": len(transactions),
+        "duplicate_candidates": count_duplicate_candidate_groups(candidates),
+    }
+
+
+def clear_unconfirmed_candidates_for_document(session: Session, document: ImportDocument) -> int:
+    if not document.source_hash:
+        return 0
+    candidates = session.exec(
+        select(FundTransactionCandidate).where(
+            FundTransactionCandidate.source_hash == document.source_hash,
+            FundTransactionCandidate.status != CandidateStatus.confirmed,
+        )
+    ).all()
+    for candidate in candidates:
+        session.delete(candidate)
+    session.commit()
+    return len(candidates)
+
+
+def count_duplicate_candidate_groups(candidates: list[FundTransactionCandidate]) -> int:
+    groups: dict[tuple, int] = {}
+    for candidate in candidates:
+        key = candidate_duplicate_key(candidate)
+        if key:
+            groups[key] = groups.get(key, 0) + 1
+    return sum(1 for count in groups.values() if count > 1)
+
+
 @app.get("/candidates", response_class=HTMLResponse)
 def candidates_page(
     request: Request,
@@ -1754,6 +1824,7 @@ def candidates_page(
     for name, items in sorted(groups.items(), key=lambda x: -len(x[1])):
         samples = "; ".join(set(c.raw_text[:40] for c in items))[:80]
         unmatched_groups.append((name, len(items), samples))
+    duplicate_candidate_ids = duplicate_candidate_warning_ids(session, matched)
     return templates.TemplateResponse(
         "candidates.html",
         {
@@ -1761,6 +1832,7 @@ def candidates_page(
             "matched": matched,
             "unmatched": unmatched,
             "unmatched_groups": unmatched_groups,
+            "duplicate_candidate_ids": duplicate_candidate_ids,
             "actions": list(TransactionAction),
         },
     )
@@ -1976,6 +2048,44 @@ def _same_money_value(left: float | None, right: float | None) -> bool:
     if left is None or right is None:
         return left is None and right is None
     return round(left, 2) == round(right, 2)
+
+
+def candidate_duplicate_key(candidate: FundTransactionCandidate) -> tuple | None:
+    if not candidate.source_file or candidate.fund_code == "000000":
+        return None
+    return (
+        candidate.fund_code,
+        candidate.trade_date,
+        candidate.action.value,
+        round(candidate.amount_cny, 2) if candidate.amount_cny is not None else None,
+        round(candidate.share, 2) if candidate.share is not None else None,
+        candidate.source_file,
+    )
+
+
+def duplicate_candidate_warning_ids(
+    session: Session,
+    candidates: list[FundTransactionCandidate],
+) -> set[int]:
+    warning_ids: set[int] = set()
+    seen: dict[tuple, int] = {}
+    for candidate in candidates:
+        if candidate.status != CandidateStatus.pending:
+            continue
+        if find_duplicate_transaction(session, candidate) and candidate.id is not None:
+            warning_ids.add(candidate.id)
+        key = candidate_duplicate_key(candidate)
+        if not key:
+            continue
+        first_id = seen.get(key)
+        if first_id is None:
+            if candidate.id is not None:
+                seen[key] = candidate.id
+            continue
+        warning_ids.add(first_id)
+        if candidate.id is not None:
+            warning_ids.add(candidate.id)
+    return warning_ids
 
 
 @app.post("/candidates/{candidate_id}/suggest-code")
