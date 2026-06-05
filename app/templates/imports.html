@@ -8,16 +8,32 @@
   </div>
   <div class="actions">
     <a class="btn" href="/imports{% if show != 'all' %}?show=all{% endif %}">{{ "只看有效" if show == "all" else "显示全部" }}</a>
+    {% if summary.failed %}
+    <form method="post" action="/imports/retry-failed">
+      <button class="btn warn" type="submit">重跑失败 {{ summary.failed }}</button>
+    </form>
+    {% endif %}
     <a class="btn primary" href="/upload">上传</a>
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
-<div id="import-table" hx-get="/imports" hx-trigger="every 3s" hx-swap="outerHTML" hx-select="#import-table">
-<div class="table-wrap">
+<div id="import-monitor" hx-get="/imports{% if show == 'all' %}?show=all{% endif %}" hx-trigger="every 3s" hx-swap="outerHTML" hx-select="#import-monitor">
+  <section class="panel stack" style="margin-bottom:16px">
+    <div class="metrics">
+      <div class="metric"><span>文档</span><strong>{{ summary.documents }}</strong></div>
+      <div class="metric"><span>处理中</span><strong>{{ summary.running }}</strong></div>
+      <div class="metric"><span>失败</span><strong>{{ summary.failed }}</strong></div>
+      <div class="metric"><span>待确认</span><strong>{{ summary.pending }}</strong></div>
+      <div class="metric"><span>未匹配</span><strong>{{ summary.unmatched }}</strong></div>
+      <div class="metric"><span>正式流水</span><strong>{{ summary.transactions }}</strong></div>
+    </div>
+  </section>
+  <div class="table-wrap">
   <table>
-    <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>文本长度</th><th>更新时间</th><th>操作</th></tr></thead>
+    <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>候选</th><th>文本长度</th><th>更新时间</th><th>操作</th></tr></thead>
     <tbody>
       {% for doc in documents %}
+      {% set audit = audits.get(doc.id, {}) %}
       <tr>
         <td>{{ doc.id }}</td>
         <td>
@@ -27,6 +43,14 @@
           {% endif %}
         </td>
         <td><span class="badge">{{ doc.status.value }}</span></td>
+        <td>
+          <div class="actions">
+            <span class="badge">候选 {{ audit.get("candidates", 0) }}</span>
+            {% if audit.get("pending", 0) %}<span class="badge">待确认 {{ audit.get("pending", 0) }}</span>{% endif %}
+            {% if audit.get("unmatched", 0) %}<span class="badge" style="background:var(--warn);color:#fff">未匹配 {{ audit.get("unmatched", 0) }}</span>{% endif %}
+            {% if audit.get("transactions", 0) %}<span class="badge">流水 {{ audit.get("transactions", 0) }}</span>{% endif %}
+          </div>
+        </td>
         <td>{{ (doc.ocr_text or doc.raw_text)|length }}</td>
         <td>{{ doc.updated_at }}</td>
         <td>
@@ -40,6 +64,11 @@
             <form method="post" action="/imports/{{ doc.id }}/archive">
               <button class="btn" type="submit">归档</button>
             </form>
+            {% if doc.status.value == "error" %}
+            <form method="post" action="/imports/{{ doc.id }}/retry">
+              <button class="btn warn" type="submit">重跑</button>
+            </form>
+            {% endif %}
             <form method="post" action="/imports/{{ doc.id }}/delete">
               <button class="btn danger" type="submit">删除</button>
             </form>
@@ -48,7 +77,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="6" class="muted">暂无导入文档。</td></tr>
+      <tr><td colspan="7" class="muted">暂无导入文档。</td></tr>
       {% endfor %}
     </tbody>
   </table>

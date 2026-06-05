@@ -1578,16 +1578,44 @@ def imports_page(
         query = query.where(ImportDocument.status != ImportStatus.deleted)
     documents = session.exec(query).all()
     config = runtime_settings(session)
+    import_audits = import_audits_for_documents(session, documents)
+    import_summary = summarize_imports(documents, import_audits)
     return templates.TemplateResponse(
         "imports.html",
         {
             "request": request,
             "documents": documents,
+            "audits": import_audits,
+            "summary": import_summary,
             "show": show,
             "message": message,
             "llm_configured": is_deepseek_configured(config),
         },
     )
+
+
+@app.post("/imports/retry-failed")
+def imports_retry_failed(
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    documents = session.exec(
+        select(ImportDocument)
+        .where(ImportDocument.status == ImportStatus.error)
+        .order_by(ImportDocument.created_at)
+    ).all()
+    job_ids = []
+    cleared = 0
+    for document in documents:
+        job, cleared_count = retry_import_document(session, document)
+        job_ids.append(str(job.id))
+        cleared += cleared_count
+    if not documents:
+        return redirect("/imports?message=没有失败导入需要重跑")
+    message = f"已重跑 {len(documents)} 个失败导入，后台任务 #{', #'.join(job_ids)}"
+    if cleared:
+        message += f"，已清理 {cleared} 条未确认候选"
+    return redirect(f"/imports?message={message}")
 
 
 @app.get("/imports/{document_id}", response_class=HTMLResponse)
@@ -1744,6 +1772,14 @@ def import_retry(
     document = session.get(ImportDocument, document_id)
     if not document:
         raise HTTPException(status_code=404)
+    job, cleared = retry_import_document(session, document)
+    message = f"自动导入已重新加入后台任务 #{job.id}"
+    if cleared:
+        message += f"，已清理 {cleared} 条未确认候选"
+    return redirect(f"/imports/{document_id}?message={message}")
+
+
+def retry_import_document(session: Session, document: ImportDocument) -> tuple[BackgroundJob, int]:
     cleared = clear_unconfirmed_candidates_for_document(session, document)
     document.error_message = ""
     document.status = ImportStatus.uploaded if document.source_file else ImportStatus.ocr_done
@@ -1751,10 +1787,7 @@ def import_retry(
     session.add(document)
     session.commit()
     job = create_and_enqueue(session, "auto_import", {"document_id": document.id})
-    message = f"自动导入已重新加入后台任务 #{job.id}"
-    if cleared:
-        message += f"，已清理 {cleared} 条未确认候选"
-    return redirect(f"/imports/{document_id}?message={message}")
+    return job, cleared
 
 
 def import_audit(session: Session, document: ImportDocument) -> dict[str, int]:
@@ -1776,6 +1809,57 @@ def import_audit(session: Session, document: ImportDocument) -> dict[str, int]:
         "unmatched": sum(1 for item in candidates if item.fund_code == "000000"),
         "transactions": len(transactions),
         "duplicate_candidates": count_duplicate_candidate_groups(candidates),
+    }
+
+
+def import_audits_for_documents(
+    session: Session,
+    documents: list[ImportDocument],
+) -> dict[int, dict[str, int]]:
+    source_hashes = [doc.source_hash for doc in documents if doc.id is not None and doc.source_hash]
+    source_files = [doc.source_file for doc in documents if doc.id is not None and doc.source_file]
+    candidates_by_hash: dict[str, list[FundTransactionCandidate]] = {}
+    transactions_by_file: dict[str, int] = {}
+    if source_hashes:
+        candidates = session.exec(
+            select(FundTransactionCandidate).where(FundTransactionCandidate.source_hash.in_(source_hashes))
+        ).all()
+        for candidate in candidates:
+            if candidate.source_hash:
+                candidates_by_hash.setdefault(candidate.source_hash, []).append(candidate)
+    if source_files:
+        transactions = session.exec(
+            select(FundTransaction).where(FundTransaction.source_file.in_(source_files))
+        ).all()
+        for transaction in transactions:
+            if transaction.source_file:
+                transactions_by_file[transaction.source_file] = transactions_by_file.get(transaction.source_file, 0) + 1
+    audits: dict[int, dict[str, int]] = {}
+    for document in documents:
+        candidates = candidates_by_hash.get(document.source_hash or "", [])
+        audits[document.id or 0] = {
+            "candidates": len(candidates),
+            "pending": sum(1 for item in candidates if item.status == CandidateStatus.pending),
+            "confirmed": sum(1 for item in candidates if item.status == CandidateStatus.confirmed),
+            "ignored": sum(1 for item in candidates if item.status == CandidateStatus.ignored),
+            "unmatched": sum(1 for item in candidates if item.fund_code == "000000"),
+            "transactions": transactions_by_file.get(document.source_file or "", 0),
+            "duplicate_candidates": count_duplicate_candidate_groups(candidates),
+        }
+    return audits
+
+
+def summarize_imports(
+    documents: list[ImportDocument],
+    audits: dict[int, dict[str, int]],
+) -> dict[str, int]:
+    return {
+        "documents": len(documents),
+        "failed": sum(1 for document in documents if document.status == ImportStatus.error),
+        "running": sum(1 for document in documents if document.status in {ImportStatus.uploaded, ImportStatus.ocr_running}),
+        "pending": sum(audit["pending"] for audit in audits.values()),
+        "unmatched": sum(audit["unmatched"] for audit in audits.values()),
+        "transactions": sum(audit["transactions"] for audit in audits.values()),
     }
 
 

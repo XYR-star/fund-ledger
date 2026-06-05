@@ -506,6 +506,51 @@ async def test_import_detail_shows_audit_and_retry_reparses(client):
     assert candidates[0].fund_code == "161725"
 
 
+async def test_imports_page_shows_audit_and_bulk_retries_failed(client):
+    import app.db
+    from app.models import CandidateStatus, FundTransactionCandidate, ImportDocument, ImportStatus, TransactionAction
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        document = ImportDocument(
+            file_name="failed.txt",
+            source_hash="failed-source",
+            ocr_text="2024-01-02 161725 招商中证白酒 buy 1000 500 2.0000 0",
+            status=ImportStatus.error,
+            error_message="parse failed",
+        )
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        session.add(
+            FundTransactionCandidate(
+                status=CandidateStatus.pending,
+                fund_code="000000",
+                fund_name="旧候选",
+                trade_date=date(2024, 1, 1),
+                action=TransactionAction.buy,
+                amount_cny=1,
+                source_hash=document.source_hash,
+            )
+        )
+        session.commit()
+
+    page = await client.get("/imports")
+    assert "重跑失败 1" in page.text
+    assert "候选 1" in page.text
+    assert "未匹配 1" in page.text
+
+    response = await client.post("/imports/retry-failed", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/imports?message=")
+    await wait_for_text(client, "/candidates", "161725")
+
+    with Session(app.db.engine) as session:
+        candidates = session.exec(select(FundTransactionCandidate)).all()
+    assert len(candidates) == 1
+    assert candidates[0].fund_code == "161725"
+
+
 async def test_auto_import_similarity_message_does_not_crash(client, tmp_path, monkeypatch):
     import app.db
     import app.main
