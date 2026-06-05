@@ -7,6 +7,11 @@
     <p class="muted">确认后才会进入正式流水并影响持仓。</p>
   </div>
   <div class="actions">
+    <form method="post" action="/candidates/auto-confirm-safe">
+      <input type="hidden" name="source_hash" value="{{ filters.source_hash }}">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <button class="btn primary" type="submit">自动确认高质量</button>
+    </form>
     <form method="post" action="/candidates/confirm-all">
       <input type="hidden" name="source_hash" value="{{ filters.source_hash }}">
       <input type="hidden" name="return_to" value="{{ return_to }}">
@@ -63,9 +68,16 @@
 
 <div class="stack">
 {% for c in matched %}
+  {% set quality = quality_by_candidate.get(c.id) %}
   <section class="panel stack">
     <div class="actions">
       <span class="badge">{{ c.status }}</span>
+      {% if quality %}
+      <span class="badge" title="{{ '；'.join(quality.issues) if quality.issues else '字段完整，可安全自动确认' }}"
+        style="{% if quality.label == '高' %}background:var(--accent);color:#fff{% elif quality.label == '低' %}background:var(--danger);color:#fff{% endif %}">
+        质量 {{ quality.label }} {{ (quality.score * 100)|round|int }}%
+      </span>
+      {% endif %}
       {% if c.id in duplicate_candidate_ids %}
       <span class="badge" style="background:var(--warn);color:#fff">疑似重复</span>
       {% endif %}

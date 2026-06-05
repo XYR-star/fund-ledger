@@ -1832,6 +1832,7 @@ def import_audit(session: Session, document: ImportDocument) -> dict[str, int]:
         "unmatched": sum(1 for item in candidates if item.fund_code == "000000"),
         "transactions": len(transactions),
         "duplicate_candidates": count_duplicate_candidate_groups(candidates),
+        "auto_confirmable": sum(1 for item in candidates if candidate_quality(session, item)["auto_confirmable"]),
     }
 
 
@@ -1868,6 +1869,7 @@ def import_audits_for_documents(
             "unmatched": sum(1 for item in candidates if item.fund_code == "000000"),
             "transactions": transactions_by_file.get(document.source_file or "", 0),
             "duplicate_candidates": count_duplicate_candidate_groups(candidates),
+            "auto_confirmable": sum(1 for item in candidates if candidate_quality(session, item)["auto_confirmable"]),
         }
     return audits
 
@@ -1883,6 +1885,7 @@ def summarize_imports(
         "pending": sum(audit["pending"] for audit in audits.values()),
         "unmatched": sum(audit["unmatched"] for audit in audits.values()),
         "transactions": sum(audit["transactions"] for audit in audits.values()),
+        "auto_confirmable": sum(audit["auto_confirmable"] for audit in audits.values()),
     }
 
 
@@ -1946,6 +1949,7 @@ def candidates_page(
         samples = "; ".join(set(c.raw_text[:40] for c in items))[:80]
         unmatched_groups.append((name, len(items), samples))
     duplicate_candidate_ids = duplicate_candidate_warning_ids(session, matched)
+    quality_by_candidate = {c.id: candidate_quality(session, c) for c in candidates if c.id is not None}
     return templates.TemplateResponse(
         "candidates.html",
         {
@@ -1954,6 +1958,7 @@ def candidates_page(
             "unmatched": unmatched_candidates,
             "unmatched_groups": unmatched_groups,
             "duplicate_candidate_ids": duplicate_candidate_ids,
+            "quality_by_candidate": quality_by_candidate,
             "actions": list(TransactionAction),
             "filters": {
                 "source_hash": source_hash,
@@ -2026,51 +2031,7 @@ def candidate_confirm(
         raise HTTPException(status_code=404)
     if candidate.status == CandidateStatus.confirmed:
         return redirect(safe_candidates_return(return_to))
-    duplicate = find_duplicate_transaction(session, candidate)
-    if duplicate:
-        candidate.status = CandidateStatus.confirmed
-        candidate.confirmed_transaction_id = duplicate.id
-        candidate.updated_at = datetime.utcnow()
-        session.add(candidate)
-        session.commit()
-        return redirect(safe_candidates_return(return_to))
-
-    fee = candidate.fee
-    if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
-        money = is_money_fund(session, candidate.fund_code)
-        if money:
-            fee = 0.0
-        else:
-            fee = infer_redemption_fee(
-                session,
-                candidate.fund_code,
-                candidate.share,
-                candidate.nav,
-                candidate.trade_date,
-            )
-
-    tx = FundTransaction(
-        candidate_id=candidate.id,
-        fund_code=candidate.fund_code,
-        fund_name=candidate.fund_name,
-        trade_date=candidate.trade_date,
-        submitted_at=candidate.submitted_at,
-        confirm_date=candidate.confirm_date,
-        action=candidate.action,
-        amount_cny=candidate.amount_cny,
-        share=candidate.share,
-        nav=candidate.nav,
-        fee=fee,
-        source_file=candidate.source_file,
-        raw_text=candidate.raw_text,
-    )
-    session.add(tx)
-    session.commit()
-    session.refresh(tx)
-    candidate.status = CandidateStatus.confirmed
-    candidate.confirmed_transaction_id = tx.id
-    candidate.updated_at = datetime.utcnow()
-    session.add(candidate)
+    confirm_candidate_transaction(session, candidate)
     session.commit()
     return redirect(safe_candidates_return(return_to))
 
@@ -2109,54 +2070,91 @@ def candidates_confirm_all(
     candidates = session.exec(query).all()
     confirmed = 0
     for candidate in candidates:
-        if session.exec(
-            select(FundTransaction).where(FundTransaction.candidate_id == candidate.id)
-        ).first():
-            candidate.status = CandidateStatus.confirmed
-            candidate.updated_at = datetime.utcnow()
-            session.add(candidate)
-            continue
-        duplicate = find_duplicate_transaction(session, candidate)
-        if duplicate:
-            candidate.status = CandidateStatus.confirmed
-            candidate.confirmed_transaction_id = duplicate.id
-            candidate.updated_at = datetime.utcnow()
-            session.add(candidate)
-            continue
-        fee = candidate.fee
-        if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
-            money = is_money_fund(session, candidate.fund_code)
-            fee = 0.0 if money else infer_redemption_fee(
-                session, candidate.fund_code, candidate.share, candidate.nav, candidate.trade_date,
-            )
-        tx = FundTransaction(
-            candidate_id=candidate.id,
-            fund_code=candidate.fund_code,
-            fund_name=candidate.fund_name,
-            trade_date=candidate.trade_date,
-            submitted_at=candidate.submitted_at,
-            confirm_date=candidate.confirm_date,
-            action=candidate.action,
-            amount_cny=candidate.amount_cny,
-            share=candidate.share,
-            nav=candidate.nav,
-            fee=fee,
-            source_file=candidate.source_file,
-            raw_text=candidate.raw_text,
-        )
-        session.add(tx)
-        session.flush()
-        candidate.status = CandidateStatus.confirmed
-        candidate.confirmed_transaction_id = tx.id
-        candidate.updated_at = datetime.utcnow()
-        session.add(candidate)
-        confirmed += 1
+        if confirm_candidate_transaction(session, candidate):
+            confirmed += 1
     session.commit()
     skipped = len(candidates) - confirmed
     msg = f"已确认 {confirmed} 条"
     if skipped:
         msg += f"，跳过 {skipped} 条（重复）"
     return candidates_redirect_with_message(return_to, msg)
+
+
+@app.post("/candidates/auto-confirm-safe")
+def candidates_auto_confirm_safe(
+    source_hash: str = Form(""),
+    return_to: str = Form("/candidates"),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    query = select(FundTransactionCandidate).where(FundTransactionCandidate.status == CandidateStatus.pending)
+    if source_hash:
+        query = query.where(FundTransactionCandidate.source_hash == source_hash)
+    candidates = session.exec(query).all()
+    confirmed = 0
+    skipped = 0
+    for candidate in candidates:
+        quality = candidate_quality(session, candidate)
+        if not quality["auto_confirmable"]:
+            skipped += 1
+            continue
+        if confirm_candidate_transaction(session, candidate):
+            confirmed += 1
+        else:
+            skipped += 1
+    session.commit()
+    return candidates_redirect_with_message(return_to, f"已自动确认 {confirmed} 条高质量候选，保留 {skipped} 条待人工核对")
+
+
+def confirm_candidate_transaction(session: Session, candidate: FundTransactionCandidate) -> bool:
+    if candidate.status == CandidateStatus.confirmed:
+        return False
+    existing = session.exec(select(FundTransaction).where(FundTransaction.candidate_id == candidate.id)).first()
+    if existing:
+        candidate.status = CandidateStatus.confirmed
+        candidate.confirmed_transaction_id = existing.id
+        candidate.updated_at = datetime.utcnow()
+        session.add(candidate)
+        return False
+    duplicate = find_duplicate_transaction(session, candidate)
+    if duplicate:
+        candidate.status = CandidateStatus.confirmed
+        candidate.confirmed_transaction_id = duplicate.id
+        candidate.updated_at = datetime.utcnow()
+        session.add(candidate)
+        return False
+    fee = candidate.fee
+    if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
+        money = is_money_fund(session, candidate.fund_code)
+        fee = 0.0 if money else infer_redemption_fee(
+            session,
+            candidate.fund_code,
+            candidate.share,
+            candidate.nav,
+            candidate.trade_date,
+        )
+    tx = FundTransaction(
+        candidate_id=candidate.id,
+        fund_code=candidate.fund_code,
+        fund_name=candidate.fund_name,
+        trade_date=candidate.trade_date,
+        submitted_at=candidate.submitted_at,
+        confirm_date=candidate.confirm_date,
+        action=candidate.action,
+        amount_cny=candidate.amount_cny,
+        share=candidate.share,
+        nav=candidate.nav,
+        fee=fee,
+        source_file=candidate.source_file,
+        raw_text=candidate.raw_text,
+    )
+    session.add(tx)
+    session.flush()
+    candidate.status = CandidateStatus.confirmed
+    candidate.confirmed_transaction_id = tx.id
+    candidate.updated_at = datetime.utcnow()
+    session.add(candidate)
+    return True
 
 
 def find_duplicate_transaction(
@@ -2183,6 +2181,104 @@ def _same_money_value(left: float | None, right: float | None) -> bool:
     if left is None or right is None:
         return left is None and right is None
     return round(left, 2) == round(right, 2)
+
+
+def candidate_quality(session: Session, candidate: FundTransactionCandidate) -> dict[str, Any]:
+    issues: list[str] = []
+    score = max(min(candidate.confidence or 0.0, 1.0), 0.0)
+    if candidate.status != CandidateStatus.pending:
+        issues.append(f"状态为 {candidate.status.value}")
+    if candidate.fund_code == "000000" or not candidate.fund_code:
+        issues.append("缺少基金代码")
+        score -= 0.35
+    if not candidate.fund_name:
+        issues.append("缺少基金名称")
+        score -= 0.08
+    if not candidate.trade_date:
+        issues.append("缺少交易日")
+        score -= 0.25
+    if not candidate.confirm_date:
+        issues.append("缺少确认日")
+        score -= 0.08
+    if not _candidate_has_trade_values(session, candidate):
+        issues.append("金额/份额/净值不完整")
+        score -= 0.25
+    if find_duplicate_transaction(session, candidate):
+        issues.append("疑似重复流水")
+        score -= 0.3
+    if candidate.status == CandidateStatus.pending and candidate_duplicate_key(candidate):
+        siblings = session.exec(
+            select(FundTransactionCandidate).where(
+                FundTransactionCandidate.status == CandidateStatus.pending,
+                FundTransactionCandidate.source_file == candidate.source_file,
+                FundTransactionCandidate.fund_code == candidate.fund_code,
+                FundTransactionCandidate.trade_date == candidate.trade_date,
+                FundTransactionCandidate.action == candidate.action,
+            )
+        ).all()
+        same_key_count = sum(1 for item in siblings if candidate_duplicate_key(item) == candidate_duplicate_key(candidate))
+        if same_key_count > 1:
+            issues.append("同文件重复候选")
+            score -= 0.3
+    score = round(max(score, 0.0), 2)
+    auto_confirmable = (
+        candidate.status == CandidateStatus.pending
+        and score >= 0.8
+        and not issues
+    )
+    if auto_confirmable:
+        label = "高"
+    elif score >= 0.6 and candidate.fund_code != "000000":
+        label = "中"
+    else:
+        label = "低"
+    return {
+        "score": score,
+        "label": label,
+        "issues": issues,
+        "auto_confirmable": auto_confirmable,
+    }
+
+
+def _candidate_has_trade_values(session: Session, candidate: FundTransactionCandidate) -> bool:
+    if candidate.action == TransactionAction.dividend:
+        return candidate.amount_cny is not None and candidate.amount_cny > 0
+    if is_money_fund(session, candidate.fund_code):
+        return (
+            candidate.amount_cny is not None
+            and candidate.amount_cny > 0
+            and candidate.share is not None
+            and candidate.share > 0
+            and candidate.nav == 1.0
+        )
+    if candidate.action == TransactionAction.buy:
+        return (
+            candidate.amount_cny is not None
+            and candidate.amount_cny > 0
+            and candidate.share is not None
+            and candidate.share > 0
+            and candidate.nav is not None
+            and candidate.nav > 0
+        )
+    if candidate.action == TransactionAction.sell:
+        return (
+            candidate.share is not None
+            and candidate.share > 0
+            and candidate.amount_cny is not None
+            and candidate.amount_cny > 0
+            and candidate.nav is not None
+            and candidate.nav > 0
+        )
+    if candidate.action == TransactionAction.dividend_reinvest:
+        return (
+            candidate.amount_cny is not None
+            and candidate.amount_cny > 0
+            and candidate.share is not None
+            and candidate.share > 0
+            and candidate.nav is not None
+            and candidate.nav > 0
+        )
+    return candidate.amount_cny is not None or candidate.share is not None
 
 
 def candidate_duplicate_key(candidate: FundTransactionCandidate) -> tuple | None:

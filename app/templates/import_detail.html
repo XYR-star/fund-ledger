@@ -46,6 +46,13 @@
     <form method="post" action="/imports/{{ document.id }}/retry">
       <button class="btn warn" type="submit">重跑自动导入</button>
     </form>
+    {% if audit.auto_confirmable %}
+    <form method="post" action="/candidates/auto-confirm-safe">
+      <input type="hidden" name="source_hash" value="{{ document.source_hash }}">
+      <input type="hidden" name="return_to" value="/candidates?source_hash={{ document.source_hash }}">
+      <button class="btn primary" type="submit">自动确认高质量 {{ audit.auto_confirmable }}</button>
+    </form>
+    {% endif %}
   </div>
   {% if not llm_configured %}
   <p class="muted">DeepSeek 尚未配置。可在设置页保存 API Key 后直接使用。</p>
@@ -61,6 +68,7 @@
     <div class="metric"><span>已确认</span><strong>{{ audit.confirmed }}</strong></div>
     <div class="metric"><span>已忽略</span><strong>{{ audit.ignored }}</strong></div>
     <div class="metric"><span>未匹配</span><strong>{{ audit.unmatched }}</strong></div>
+    <div class="metric"><span>可自动确认</span><strong>{{ audit.auto_confirmable }}</strong></div>
     <div class="metric"><span>正式流水</span><strong>{{ audit.transactions }}</strong></div>
   </div>
   {% if audit.duplicate_candidates %}
@@ -111,6 +119,7 @@
     <div class="actions">
       <button class="btn primary" type="submit">保存文本</button>
       <a class="btn" href="/candidates">查看候选</a>
+      <a class="btn" href="/candidates?source_hash={{ document.source_hash }}">查看本导入候选</a>
     </div>
   </form>
 </section>

@@ -267,6 +267,58 @@ async def test_candidates_page_filters_by_import_and_confirm_all_scope(client):
     assert {candidate.fund_code: candidate.status for candidate in candidates}["005827"] == CandidateStatus.pending
 
 
+async def test_auto_confirm_safe_only_confirms_high_quality_candidates(client):
+    import app.db
+    from app.main import create_candidates_from_rows
+    from app.models import CandidateStatus, FundNav, FundTransaction, FundTransactionCandidate
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.1))
+        create_candidates_from_rows(
+            session,
+            [
+                {
+                    "fund_code": "161725",
+                    "fund_name": "招商中证白酒",
+                    "trade_date": "2024-01-02",
+                    "action": "buy",
+                    "amount_cny": 100,
+                },
+                {
+                    "fund_code": "000000",
+                    "fund_name": "未知基金",
+                    "trade_date": "2024-01-02",
+                    "action": "buy",
+                    "amount_cny": 200,
+                },
+            ],
+            source_hash="quality-source",
+        )
+        session.commit()
+
+    page = await client.get("/candidates?source_hash=quality-source")
+    assert "质量 高" in page.text
+    assert "自动确认高质量" in page.text
+
+    response = await client.post(
+        "/candidates/auto-confirm-safe",
+        data={"source_hash": "quality-source", "return_to": "/candidates?source_hash=quality-source"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "source_hash=quality-source" in response.headers["location"]
+
+    with Session(app.db.engine) as session:
+        transactions = session.exec(select(FundTransaction)).all()
+        candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
+    assert len(transactions) == 1
+    assert transactions[0].fund_code == "161725"
+    assert candidates[0].status == CandidateStatus.confirmed
+    assert candidates[1].status == CandidateStatus.pending
+
+
 async def test_ignore_candidate_does_not_create_transaction(client):
     await login(client)
     await client.post(
