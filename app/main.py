@@ -74,7 +74,7 @@ def redirect(path: str) -> RedirectResponse:
     return RedirectResponse(path, status_code=HTTP_303_SEE_OTHER)
 
 
-def candidates_url(source_hash: str = "", status: str = "", unmatched: bool = False) -> str:
+def candidates_url(source_hash: str = "", status: str = "", unmatched: bool = False, quality: str = "") -> str:
     params = {}
     if source_hash:
         params["source_hash"] = source_hash
@@ -82,6 +82,8 @@ def candidates_url(source_hash: str = "", status: str = "", unmatched: bool = Fa
         params["status"] = status
     if unmatched:
         params["unmatched"] = "1"
+    if quality:
+        params["quality"] = quality
     query = urlencode(params)
     return f"/candidates?{query}" if query else "/candidates"
 
@@ -1919,6 +1921,7 @@ def candidates_page(
     source_hash: str = "",
     status: str = "",
     unmatched: bool = False,
+    quality: str = "",
     message: str = "",
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
@@ -1931,6 +1934,18 @@ def candidates_page(
     candidates = session.exec(
         query.order_by(FundTransactionCandidate.status, desc(FundTransactionCandidate.created_at))
     ).all()
+    quality_by_candidate = {c.id: candidate_quality(session, c) for c in candidates if c.id is not None}
+    if quality == "auto":
+        candidates = [c for c in candidates if quality_by_candidate.get(c.id, {}).get("auto_confirmable")]
+    elif quality == "low":
+        candidates = [c for c in candidates if quality_by_candidate.get(c.id, {}).get("label") == "低"]
+    elif quality == "review":
+        candidates = [
+            c
+            for c in candidates
+            if c.status == CandidateStatus.pending
+            and not quality_by_candidate.get(c.id, {}).get("auto_confirmable")
+        ]
     matched = [c for c in candidates if c.fund_code != "000000"]
     unmatched_candidates = [c for c in candidates if c.fund_code == "000000"]
     if unmatched:
@@ -1949,7 +1964,6 @@ def candidates_page(
         samples = "; ".join(set(c.raw_text[:40] for c in items))[:80]
         unmatched_groups.append((name, len(items), samples))
     duplicate_candidate_ids = duplicate_candidate_warning_ids(session, matched)
-    quality_by_candidate = {c.id: candidate_quality(session, c) for c in candidates if c.id is not None}
     return templates.TemplateResponse(
         "candidates.html",
         {
@@ -1964,8 +1978,9 @@ def candidates_page(
                 "source_hash": source_hash,
                 "status": status,
                 "unmatched": bool(unmatched),
+                "quality": quality,
             },
-            "return_to": candidates_url(source_hash, status, bool(unmatched)),
+            "return_to": candidates_url(source_hash, status, bool(unmatched), quality),
             "selected_document": selected_document,
             "message": message,
         },

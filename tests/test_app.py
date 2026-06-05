@@ -270,10 +270,11 @@ async def test_candidates_page_filters_by_import_and_confirm_all_scope(client):
 async def test_auto_confirm_safe_only_confirms_high_quality_candidates(client):
     import app.db
     from app.main import create_candidates_from_rows
-    from app.models import CandidateStatus, FundNav, FundTransaction, FundTransactionCandidate
+    from app.models import CandidateStatus, FundNav, FundTransaction, FundTransactionCandidate, ImportDocument, ImportStatus
 
     await login(client)
     with Session(app.db.engine) as session:
+        session.add(ImportDocument(file_name="quality.png", source_hash="quality-source", status=ImportStatus.parse_done))
         session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
         session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 3), unit_nav=2.1))
         create_candidates_from_rows(
@@ -301,6 +302,14 @@ async def test_auto_confirm_safe_only_confirms_high_quality_candidates(client):
     page = await client.get("/candidates?source_hash=quality-source")
     assert "质量 高" in page.text
     assert "自动确认高质量" in page.text
+    auto_page = await client.get("/candidates?source_hash=quality-source&quality=auto")
+    assert "161725" in auto_page.text
+    assert "未知基金" not in auto_page.text
+    review_page = await client.get("/candidates?source_hash=quality-source&quality=review")
+    assert "未知基金" in review_page.text
+    assert "161725" not in review_page.text
+    imports_page = await client.get("/imports")
+    assert "quality=auto" in imports_page.text
 
     response = await client.post(
         "/candidates/auto-confirm-safe",

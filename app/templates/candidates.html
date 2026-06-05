@@ -37,8 +37,11 @@
   <div class="actions">
     <a class="btn small" href="/candidates{% if filters.source_hash %}?source_hash={{ filters.source_hash }}{% endif %}">全部候选</a>
     <a class="btn small" href="/candidates?{% if filters.source_hash %}source_hash={{ filters.source_hash }}&{% endif %}status=pending">待确认</a>
+    <a class="btn small" href="/candidates?{% if filters.source_hash %}source_hash={{ filters.source_hash }}&{% endif %}quality=auto">可自动确认</a>
+    <a class="btn small" href="/candidates?{% if filters.source_hash %}source_hash={{ filters.source_hash }}&{% endif %}quality=review">待人工核对</a>
+    <a class="btn small" href="/candidates?{% if filters.source_hash %}source_hash={{ filters.source_hash }}&{% endif %}quality=low">低质量</a>
     <a class="btn small" href="/candidates?{% if filters.source_hash %}source_hash={{ filters.source_hash }}&{% endif %}unmatched=1">未匹配</a>
-    {% if filters.source_hash or filters.status or filters.unmatched %}
+    {% if filters.source_hash or filters.status or filters.unmatched or filters.quality %}
     <a class="btn small" href="/candidates">清除筛选</a>
     {% endif %}
   </div>

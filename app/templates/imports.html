@@ -48,7 +48,7 @@
           <div class="actions">
             <a class="badge" href="/candidates?source_hash={{ doc.source_hash }}">候选 {{ audit.get("candidates", 0) }}</a>
             {% if audit.get("pending", 0) %}<a class="badge" href="/candidates?source_hash={{ doc.source_hash }}&status=pending">待确认 {{ audit.get("pending", 0) }}</a>{% endif %}
-            {% if audit.get("auto_confirmable", 0) %}<span class="badge" style="background:var(--accent);color:#fff">可自动 {{ audit.get("auto_confirmable", 0) }}</span>{% endif %}
+            {% if audit.get("auto_confirmable", 0) %}<a class="badge" href="/candidates?source_hash={{ doc.source_hash }}&quality=auto" style="background:var(--accent);color:#fff">可自动 {{ audit.get("auto_confirmable", 0) }}</a>{% endif %}
             {% if audit.get("unmatched", 0) %}<a class="badge" href="/candidates?source_hash={{ doc.source_hash }}&unmatched=1" style="background:var(--warn);color:#fff">未匹配 {{ audit.get("unmatched", 0) }}</a>{% endif %}
             {% if audit.get("transactions", 0) %}<span class="badge">流水 {{ audit.get("transactions", 0) }}</span>{% endif %}
           </div>
