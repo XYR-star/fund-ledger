@@ -340,6 +340,49 @@ async def test_ignore_candidate_does_not_create_transaction(client):
     assert "易方达蓝筹" not in tx_page.text
 
 
+async def test_manual_transaction_create_and_delete(client):
+    import app.db
+    from app.models import FundRule, FundTransaction
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundRule(fund_code="161725", fund_name="招商中证白酒", buy_fee_rate=0.0))
+        session.commit()
+
+    response = await client.post(
+        "/transactions",
+        data={
+            "fund_code": "161725",
+            "fund_name": "",
+            "trade_date": "2024-01-02",
+            "action": "buy",
+            "amount_cny": "1000",
+            "nav": "2.0",
+            "note": "手动补录",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    page = await client.get("/transactions")
+    assert "招商中证白酒" in page.text
+    assert "手动补录" in page.text
+    assert "500.0000" in page.text
+
+    holdings = await client.get("/holdings")
+    assert "161725" in holdings.text
+    assert "500.0000" in holdings.text
+
+    with Session(app.db.engine) as session:
+        tx = session.exec(select(FundTransaction)).first()
+        tx_id = tx.id
+    response = await client.post(f"/transactions/{tx_id}/delete", follow_redirects=False)
+    assert response.status_code == 303
+    page = await client.get("/transactions")
+    assert "招商中证白酒" not in page.text
+    holdings = await client.get("/holdings")
+    assert "161725" not in holdings.text
+
+
 async def test_holdings_calculation_without_synced_nav(client):
     await login(client)
     await client.post(

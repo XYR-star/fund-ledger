@@ -697,6 +697,76 @@ def apply_trade_calculation(
     return amount_cny, share, fee, confirm_date, effective_trade_date
 
 
+def calculate_manual_transaction_values(
+    session: Session,
+    fund_code: str,
+    action: TransactionAction,
+    amount_cny: float | None,
+    share: float | None,
+    nav: float | None,
+    fee: float | None,
+    trade_date: date,
+    submitted_at: time | None,
+    confirm_date: date | None,
+) -> tuple[float | None, float | None, float | None, date | None, date, float | None]:
+    if nav is None:
+        amount_cny, share, calc_fee, calc_confirm, calc_trade_date = apply_trade_calculation(
+            session,
+            fund_code,
+            action,
+            amount_cny,
+            share,
+            nav,
+            trade_date,
+            submitted_at=submitted_at,
+        )
+        return amount_cny, share, fee if fee is not None else calc_fee, confirm_date or calc_confirm, calc_trade_date, nav
+    rule = get_fund_rule(session, fund_code)
+    money = is_money_fund(session, fund_code)
+    nav_value = 1.0 if money else nav
+    calc_confirm = confirm_date or find_nth_nav_date(
+        session,
+        fund_code,
+        trade_date,
+        rule.buy_confirm_days if action == TransactionAction.buy else rule.sell_confirm_days,
+    )
+    calc_fee = fee
+    if money:
+        calc_fee = 0.0 if fee is None else fee
+        if action == TransactionAction.buy:
+            canonical = amount_cny if amount_cny is not None else share
+            return canonical, canonical, calc_fee, calc_confirm or trade_date, trade_date, 1.0
+        if action == TransactionAction.sell:
+            canonical = share if share is not None else amount_cny
+            return canonical, canonical, calc_fee, calc_confirm or trade_date, trade_date, 1.0
+    if action == TransactionAction.buy:
+        if amount_cny is not None and amount_cny > 0:
+            calc_fee = calc_fee if calc_fee is not None else round(amount_cny * rule.buy_fee_rate, 2)
+            if share is None:
+                share = round((amount_cny - (calc_fee or 0)) / nav_value, 2)
+        elif share is not None and share > 0:
+            amount_cny = round(share * nav_value, 2)
+            calc_fee = calc_fee if calc_fee is not None else round(amount_cny * rule.buy_fee_rate, 2)
+    elif action == TransactionAction.sell:
+        if share is not None and share > 0:
+            calc_fee = calc_fee if calc_fee is not None else infer_redemption_fee(session, fund_code, share, nav_value, trade_date)
+            if amount_cny is None:
+                amount_cny = round(share * nav_value - (calc_fee or 0), 2)
+        elif amount_cny is not None and amount_cny > 0:
+            share = round(amount_cny / nav_value, 2)
+            calc_fee = calc_fee if calc_fee is not None else infer_redemption_fee(session, fund_code, share, nav_value, trade_date)
+    elif action == TransactionAction.dividend:
+        share = None
+        calc_fee = 0.0 if calc_fee is None else calc_fee
+    elif action == TransactionAction.dividend_reinvest:
+        calc_fee = 0.0 if calc_fee is None else calc_fee
+        if amount_cny is not None and amount_cny > 0 and share is None:
+            share = round(amount_cny / nav_value, 2)
+        elif share is not None and share > 0 and amount_cny is None:
+            amount_cny = round(share * nav_value, 2)
+    return amount_cny, share, calc_fee, calc_confirm, trade_date, nav_value
+
+
 def create_candidates_from_rows(
     session: Session,
     rows: list[dict[str, Any]],
@@ -2436,6 +2506,7 @@ def _apply_unmatched_code_fix(
 @app.get("/transactions", response_class=HTMLResponse)
 def transactions_page(
     request: Request,
+    message: str = "",
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -2443,8 +2514,86 @@ def transactions_page(
         select(FundTransaction).order_by(desc(FundTransaction.trade_date))
     ).all()
     return templates.TemplateResponse(
-        "transactions.html", {"request": request, "transactions": transactions}
+        "transactions.html",
+        {
+            "request": request,
+            "transactions": transactions,
+            "actions": list(TransactionAction),
+            "message": message,
+        },
     )
+
+
+@app.post("/transactions")
+def transaction_create(
+    fund_code: str = Form(...),
+    fund_name: str = Form(""),
+    trade_date: date = Form(...),
+    submitted_at: Optional[time] = Form(None),
+    confirm_date: Optional[date] = Form(None),
+    action: TransactionAction = Form(...),
+    amount_cny: Optional[float] = Form(None),
+    share: Optional[float] = Form(None),
+    nav: Optional[float] = Form(None),
+    fee: Optional[float] = Form(None),
+    note: str = Form(""),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    code = fund_code.strip().zfill(6)
+    if not code.isdigit() or len(code) != 6:
+        return redirect("/transactions?message=无效的基金代码")
+    rule = get_fund_rule(session, code)
+    amount_cny, share, fee, confirm_date, trade_date, nav = calculate_manual_transaction_values(
+        session,
+        code,
+        action,
+        amount_cny,
+        share,
+        nav,
+        fee,
+        trade_date,
+        submitted_at,
+        confirm_date,
+    )
+    tx = FundTransaction(
+        fund_code=code,
+        fund_name=fund_name.strip() or rule.fund_name,
+        trade_date=trade_date,
+        submitted_at=submitted_at,
+        confirm_date=confirm_date,
+        action=action,
+        amount_cny=amount_cny,
+        share=share,
+        nav=nav,
+        fee=fee,
+        source_file="manual",
+        raw_text=note.strip(),
+    )
+    session.add(tx)
+    session.commit()
+    return redirect("/transactions?message=手动流水已新增")
+
+
+@app.post("/transactions/{transaction_id}/delete")
+def transaction_delete(
+    transaction_id: int,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    tx = session.get(FundTransaction, transaction_id)
+    if not tx:
+        raise HTTPException(status_code=404)
+    if tx.candidate_id:
+        candidate = session.get(FundTransactionCandidate, tx.candidate_id)
+        if candidate:
+            candidate.status = CandidateStatus.pending
+            candidate.confirmed_transaction_id = None
+            candidate.updated_at = datetime.utcnow()
+            session.add(candidate)
+    session.delete(tx)
+    session.commit()
+    return redirect("/transactions?message=流水已删除")
 
 
 @app.get("/holdings", response_class=HTMLResponse)
