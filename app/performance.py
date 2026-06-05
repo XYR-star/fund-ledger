@@ -75,18 +75,22 @@ def build_performance_charts(
             if not item.is_closed
         }
         funds = [code for code in funds if code in active_codes]
+    start_dates = {
+        code: min(tx.trade_date for tx in txs if tx.fund_code == code)
+        for code in funds
+        if any(tx.fund_code == code for tx in txs)
+    }
+    navs_by_fund = navs_for_funds(session, funds, min(start_dates.values()) if start_dates else None)
     charts = []
     for fund_code in funds:
         fund_txs = [tx for tx in txs if tx.fund_code == fund_code]
         if not fund_txs:
             continue
         fund_name = next((tx.fund_name for tx in reversed(fund_txs) if tx.fund_name), "")
-        navs = session.exec(
-            select(FundNav).where(FundNav.fund_code == fund_code).order_by(FundNav.nav_date)
-        ).all()
+        navs = navs_by_fund.get(fund_code, [])
         if len(navs) < 2:
             continue
-        start_date = min(tx.trade_date for tx in fund_txs)
+        start_date = start_dates[fund_code]
         fund_points = normalize_nav_points(
             [
                 (item.nav_date, 1.0 if fund_code in money_codes else item.unit_nav)
@@ -129,6 +133,21 @@ def build_performance_charts(
             )
         )
     return charts
+
+
+def navs_for_funds(session: Session, fund_codes: list[str], start_date: date | None = None) -> dict[str, list[FundNav]]:
+    if not fund_codes:
+        return {}
+    query = select(FundNav).where(FundNav.fund_code.in_(fund_codes))
+    if start_date:
+        query = query.where(FundNav.nav_date >= start_date)
+    navs = session.exec(
+        query.order_by(FundNav.fund_code, FundNav.nav_date)
+    ).all()
+    result: dict[str, list[FundNav]] = {}
+    for nav in navs:
+        result.setdefault(nav.fund_code, []).append(nav)
+    return result
 
 
 def normalize_nav_points(items: list[tuple[date, float]]) -> list[ChartPoint]:

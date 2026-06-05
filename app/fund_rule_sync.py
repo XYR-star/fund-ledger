@@ -284,6 +284,8 @@ _fund_list_failed: bool = False
 
 def search_fund_by_name(fund_name: str) -> dict[str, str] | None:
     global _fund_list_cache, _fund_list_failed
+    if not _is_plausible_fund_name(fund_name):
+        return None
     if _fund_list_failed:
         return search_fund_by_name_sina(fund_name) or search_fund_by_name_eastmoney(fund_name)
     try:
@@ -362,6 +364,15 @@ def search_fund_by_name(fund_name: str) -> dict[str, str] | None:
     if eastmoney:
         return eastmoney
     return None
+
+
+def _is_plausible_fund_name(value: str) -> bool:
+    text = value.strip()
+    if len(text) < 4:
+        return False
+    if re.fullmatch(r"[\d\s:：.。-]+", text):
+        return False
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
 def search_fund_by_name_sina(fund_name: str) -> dict[str, str] | None:
@@ -487,10 +498,13 @@ def _fund_name_core(value: str) -> str:
     replacements = {
         "高股息": "红利",
         "低波动": "低波",
+        "5OETF": "50ETF",
+        "5OET": "50ET",
+        "QDI)": "QDII)",
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
-    for noise in ("基金", "指数型", "混合型", "发起式", "人民币份额", "美元份额", "港元份额"):
+    for noise in ("基金", "指数型", "混合型", "发起式", "人民币份额", "美元份额", "港元份额", "中国"):
         text = text.replace(noise, "")
     return text
 

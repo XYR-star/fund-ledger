@@ -132,6 +132,39 @@ async def test_candidate_confirm_flow(client):
     assert tx_page.text.count("招商中证白酒") == 1
 
 
+async def test_confirm_all_deduplicates_identical_source_candidates(client):
+    import app.db
+    from app.models import CandidateStatus, FundTransaction, FundTransactionCandidate, TransactionAction
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        for _ in range(2):
+            session.add(
+                FundTransactionCandidate(
+                    status=CandidateStatus.pending,
+                    fund_code="161725",
+                    fund_name="招商中证白酒",
+                    trade_date=date(2024, 1, 2),
+                    action=TransactionAction.buy,
+                    amount_cny=100,
+                    share=50,
+                    nav=2,
+                    source_file="/tmp/same.png",
+                )
+            )
+        session.commit()
+
+    response = await client.post("/candidates/confirm-all", follow_redirects=False)
+    assert response.status_code == 303
+    with Session(app.db.engine) as session:
+        transactions = session.exec(select(FundTransaction)).all()
+        candidates = session.exec(select(FundTransactionCandidate)).all()
+    assert len(transactions) == 1
+    assert len(candidates) == 2
+    assert {candidate.status for candidate in candidates} == {CandidateStatus.confirmed}
+    assert {candidate.confirmed_transaction_id for candidate in candidates} == {transactions[0].id}
+
+
 async def test_ignore_candidate_does_not_create_transaction(client):
     await login(client)
     await client.post(
@@ -879,10 +912,50 @@ async def test_rule_parser_handles_confirm_and_fee_text(monkeypatch):
     monkeypatch.setattr(sync, "_fund_list_failed", False)
     monkeypatch.setattr(sync, "search_fund_by_name_sina", lambda _: None)
     monkeypatch.setattr(sync, "search_fund_by_name_eastmoney", lambda _: None)
+    assert search_fund_by_name("00") is None
+    assert search_fund_by_name("25") is None
     result = search_fund_by_name("易方达恒生港股通高股息低波动ETF联接发起式A")
     assert result is None
     result = search_fund_by_name("华泰柏瑞恒生港股通高股息低波动ETF联接发起式A")
     assert result["fund_code"] == "025937"
+
+
+async def test_fund_name_search_normalizes_ocr_digit_letter_noise(monkeypatch):
+    import pandas as pd
+    import app.fund_rule_sync as sync
+    from app.fund_rule_sync import search_fund_by_name
+
+    monkeypatch.setattr(
+        sync,
+        "_fund_list_cache",
+        pd.DataFrame(
+            [
+                {
+                    "基金代码": "006327",
+                    "基金简称": "易方达中证海外互联网50ETF联接(QDII)A",
+                    "基金类型": "QDII",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(sync, "_fund_list_failed", False)
+    monkeypatch.setattr(sync, "search_fund_by_name_sina", lambda _: None)
+    monkeypatch.setattr(sync, "search_fund_by_name_eastmoney", lambda _: None)
+    result = search_fund_by_name("易方达中证海外中国互联网5OETF联接（QDII）A(人民币份额)")
+    assert result["fund_code"] == "006327"
+
+
+async def test_known_fund_name_match_normalizes_ocr_noise():
+    from app.main import find_known_fund_code
+
+    known_names = {"易方达中证海外互联网50ETF联接(QDII)A": "006327"}
+    assert (
+        find_known_fund_code(
+            "易方达中证海外中国互联网5OETF联接（QDII）A(人民币份额)",
+            known_names,
+        )
+        == "006327"
+    )
 
 
 async def test_fund_name_search_uses_full_sina_suggestion(monkeypatch):

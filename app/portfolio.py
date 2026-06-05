@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
+from sqlalchemy import bindparam, text
 from sqlmodel import Session, desc, select
 
 from .models import FundNav, FundRule, FundTransaction, TransactionAction
@@ -87,21 +88,10 @@ def calculate_position_summaries(session: Session) -> list[PositionSummary]:
             item["share"] += share or 0.0
 
     positions: list[PositionSummary] = []
+    latest_navs = latest_nav_by_fund(session, set(grouped))
     for fund_code, item in grouped.items():
-        if fund_code in money_codes:
-            latest = session.exec(
-                select(FundNav)
-                .where(FundNav.fund_code == fund_code)
-                .order_by(desc(FundNav.nav_date))
-            ).first()
-            latest_nav = 1.0
-        else:
-            latest = session.exec(
-                select(FundNav)
-                .where(FundNav.fund_code == fund_code)
-                .order_by(desc(FundNav.nav_date))
-            ).first()
-            latest_nav = latest.unit_nav if latest else None
+        latest = latest_navs.get(fund_code)
+        latest_nav = 1.0 if fund_code in money_codes else (latest.unit_nav if latest else None)
         market_value = item["share"] * latest_nav if latest_nav else 0.0
         profit = market_value - item["cost"] if latest_nav else 0.0
         profit_rate = profit / item["cost"] if item["cost"] and latest_nav else None
@@ -131,6 +121,48 @@ def calculate_position_summaries(session: Session) -> list[PositionSummary]:
             )
         )
     return sorted(positions, key=lambda h: (h.is_closed, -h.market_value, h.fund_code))
+
+
+def latest_nav_by_fund(session: Session, fund_codes: set[str]) -> dict[str, FundNav]:
+    if not fund_codes:
+        return {}
+    rows = session.execute(
+        text(
+            """
+            SELECT f.fund_code, f.nav_date, f.unit_nav, f.accumulated_nav, f.daily_return, f.source, f.created_at, f.updated_at
+            FROM fundnav f
+            JOIN (
+                SELECT fund_code, MAX(nav_date) AS nav_date
+                FROM fundnav
+                WHERE fund_code IN :fund_codes
+                GROUP BY fund_code
+            ) latest
+              ON latest.fund_code = f.fund_code AND latest.nav_date = f.nav_date
+            """
+        ).bindparams(bindparam("fund_codes", expanding=True, value=tuple(fund_codes)))
+    ).mappings()
+    result = {}
+    for row in rows:
+        nav_date = row["nav_date"]
+        if isinstance(nav_date, str):
+            nav_date = date.fromisoformat(nav_date[:10])
+        created_at = row["created_at"]
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        updated_at = row["updated_at"]
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at)
+        result[row["fund_code"]] = FundNav(
+            fund_code=row["fund_code"],
+            nav_date=nav_date,
+            unit_nav=row["unit_nav"],
+            accumulated_nav=row["accumulated_nav"],
+            daily_return=row["daily_return"],
+            source=row["source"],
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+    return result
 
 
 def calculate_holdings(session: Session) -> list[Holding]:

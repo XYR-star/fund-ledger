@@ -16,7 +16,7 @@ from .auth import add_session_middleware, current_user, login_user, logout_user,
 from .config import ensure_data_dirs, settings
 from .db import engine, get_session, init_db
 from .extractors import extract_candidates, hash_content, hash_file
-from .fund_rule_sync import fetch_fund_rule_from_akshare, search_fund_by_name, sync_timestamp
+from .fund_rule_sync import _fund_name_core, fetch_fund_rule_from_akshare, search_fund_by_name, sync_timestamp
 from .jobs import create_and_enqueue, recover_interrupted_jobs, register_job
 from .llm import is_deepseek_configured, parse_with_deepseek, resolve_fund_code_by_name
 from .models import (
@@ -160,6 +160,11 @@ def _resolve_fund_code(
         return None
     if fund_name in llm_cache:
         return llm_cache[fund_name]
+    known_code = find_known_fund_code(fund_name, known_names)
+    if known_code:
+        llm_cache[fund_name] = known_code
+        warnings.append(f"本地名称匹配 {fund_name} → {known_code}")
+        return known_code
     result = search_fund_by_name(fund_name)
     if not result:
         return None
@@ -184,6 +189,20 @@ def _resolve_fund_code(
     session.commit()
     warnings.append(f"名称匹配 {fund_name} → {code}")
     return code
+
+
+def find_known_fund_code(fund_name: str, known_names: dict[str, str]) -> str | None:
+    if fund_name in known_names:
+        return known_names[fund_name]
+    query_core = _fund_name_core(fund_name)
+    if len(query_core) < 8:
+        return None
+    matches = [
+        code
+        for name, code in known_names.items()
+        if code != "000000" and _fund_name_core(name) == query_core
+    ]
+    return matches[0] if len(set(matches)) == 1 else None
 
 
 def create_inferred_candidates_from_minimal_text(
@@ -1804,6 +1823,14 @@ def candidate_confirm(
         raise HTTPException(status_code=404)
     if candidate.status == CandidateStatus.confirmed:
         return redirect("/candidates")
+    duplicate = find_duplicate_transaction(session, candidate)
+    if duplicate:
+        candidate.status = CandidateStatus.confirmed
+        candidate.confirmed_transaction_id = duplicate.id
+        candidate.updated_at = datetime.utcnow()
+        session.add(candidate)
+        session.commit()
+        return redirect("/candidates")
 
     fee = candidate.fee
     if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
@@ -1882,6 +1909,13 @@ def candidates_confirm_all(
             candidate.updated_at = datetime.utcnow()
             session.add(candidate)
             continue
+        duplicate = find_duplicate_transaction(session, candidate)
+        if duplicate:
+            candidate.status = CandidateStatus.confirmed
+            candidate.confirmed_transaction_id = duplicate.id
+            candidate.updated_at = datetime.utcnow()
+            session.add(candidate)
+            continue
         fee = candidate.fee
         if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
             money = is_money_fund(session, candidate.fund_code)
@@ -1916,6 +1950,32 @@ def candidates_confirm_all(
     if skipped:
         msg += f"，跳过 {skipped} 条（重复）"
     return redirect(f"/candidates?message={msg}")
+
+
+def find_duplicate_transaction(
+    session: Session,
+    candidate: FundTransactionCandidate,
+) -> FundTransaction | None:
+    matches = session.exec(
+        select(FundTransaction).where(
+            FundTransaction.fund_code == candidate.fund_code,
+            FundTransaction.trade_date == candidate.trade_date,
+            FundTransaction.action == candidate.action,
+            FundTransaction.source_file == candidate.source_file,
+        )
+    ).all()
+    for tx in matches:
+        if tx.candidate_id == candidate.id:
+            continue
+        if _same_money_value(tx.amount_cny, candidate.amount_cny) and _same_money_value(tx.share, candidate.share):
+            return tx
+    return None
+
+
+def _same_money_value(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    return round(left, 2) == round(right, 2)
 
 
 @app.post("/candidates/{candidate_id}/suggest-code")
