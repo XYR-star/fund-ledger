@@ -1090,13 +1090,13 @@ def parse_float_value(value: Any) -> float | None:
         return None
 
 
-def parse_int_value(value: Any) -> int | None:
+def parse_int_value(value: Any, default: int | None = None) -> int | None:
     if value in (None, "", "-", "null"):
-        return None
+        return default
     try:
         return int(str(value).strip())
     except ValueError:
-        return None
+        return default
 
 
 def parse_positive_int_value(value: Any) -> int | None:
@@ -1483,13 +1483,6 @@ def prune_backup_files(keep: int) -> None:
     files = sorted(backup_dir().glob("fund-ledger-backup-*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
     for path in files[max(keep, 1):]:
         path.unlink(missing_ok=True)
-
-
-def parse_int_value(value: Any, default: int = 0) -> int:
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return default
 
 
 def backup_counts(payload: dict[str, Any]) -> dict[str, int]:
