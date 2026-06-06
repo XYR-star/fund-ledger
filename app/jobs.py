@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 from .models import BackgroundJob, JobStatus
 
 
-_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="fund-ledger-job")
+_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fund-ledger-job")
 _handlers: dict[str, Callable[[dict[str, Any]], str]] = {}
 
 
