@@ -2083,3 +2083,89 @@ async def test_cancelled_llm_row_is_ignored_and_not_confirmed(client):
 
         assert session.exec(select(FundTransaction)).all() == []
         assert session.get(FundTransactionCandidate, candidates[0].id).status == CandidateStatus.ignored
+
+
+async def test_llm_row_uses_ocr_source_status_and_submitted_time_for_duplicates(client):
+    import app.db
+    from app.main import confirm_candidate_transaction, create_candidates_from_rows
+    from app.models import CandidateStatus, FundNav, FundTransaction, FundTransactionCandidate
+
+    await login(client)
+    source_text = "\n".join(
+        [
+            "名称",
+            "创建时间",
+            "交易类型",
+            "金额",
+            "状态",
+            "长城短债D",
+            "2026-04-14 11:48:36",
+            "申购",
+            "10000.00",
+            "已撤销",
+            "明细",
+            "长城短债D",
+            "2026-04-17 09:38:14",
+            "申购",
+            "10000.00",
+            "成功",
+            "明细",
+            "长城短债D",
+            "2026-04-18 12:28:04",
+            "申购",
+            "10000.00",
+            "成功",
+            "明细",
+        ]
+    )
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="019872", nav_date=date(2026, 4, 14), unit_nav=1.24))
+        session.add(FundNav(fund_code="019872", nav_date=date(2026, 4, 17), unit_nav=1.24))
+        session.add(FundNav(fund_code="019872", nav_date=date(2026, 4, 20), unit_nav=1.24))
+        create_candidates_from_rows(
+            session,
+            [
+                {
+                    "fund_code": "019872",
+                    "fund_name": "长城短债D",
+                    "trade_date": "2026-04-14",
+                    "submitted_at": "11:48",
+                    "action": "buy",
+                    "amount_cny": 10000,
+                },
+                {
+                    "fund_code": "019872",
+                    "fund_name": "长城短债D",
+                    "trade_date": "2026-04-17",
+                    "submitted_at": "09:38",
+                    "action": "buy",
+                    "amount_cny": 10000,
+                },
+                {
+                    "fund_code": "019872",
+                    "fund_name": "长城短债D",
+                    "trade_date": "2026-04-18",
+                    "submitted_at": "12:28",
+                    "action": "buy",
+                    "amount_cny": 10000,
+                },
+            ],
+            source_file="same-file.png",
+            source_hash="same-hash",
+            source_text=source_text,
+        )
+        session.commit()
+        candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
+        assert [candidate.status for candidate in candidates] == [
+            CandidateStatus.ignored,
+            CandidateStatus.pending,
+            CandidateStatus.pending,
+        ]
+        assert "已撤销" in candidates[0].raw_text
+
+        assert confirm_candidate_transaction(session, candidates[1])
+        assert confirm_candidate_transaction(session, candidates[2])
+        session.commit()
+        transactions = session.exec(select(FundTransaction).order_by(FundTransaction.id)).all()
+        assert len(transactions) == 2
+        assert {tx.submitted_at.strftime("%H:%M") for tx in transactions} == {"09:38", "12:28"}

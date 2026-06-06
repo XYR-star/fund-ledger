@@ -681,6 +681,47 @@ def infer_candidate_status(text: str) -> CandidateStatus:
     return CandidateStatus.pending
 
 
+def infer_candidate_status_for_row(row: dict[str, Any], source_text: str | None = None) -> CandidateStatus:
+    source_status = source_status_for_row(row, source_text or "")
+    return infer_candidate_status(f"{row} {source_status}")
+
+
+def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
+    if not source_text:
+        return ""
+    fund_name = str(row.get("fund_name") or "").strip()
+    trade_date = parse_date_value(row.get("trade_date"))
+    if not fund_name or not trade_date:
+        return ""
+    amount = parse_float_value(row.get("amount_cny") or row.get("amount") or row.get("share"))
+    date_text = trade_date.isoformat()
+    compact_date = date_text.replace("-", "")
+    amount_tokens: set[str] = set()
+    if amount is not None:
+        amount_tokens.add(f"{amount:.2f}")
+        amount_tokens.add(str(int(amount)) if amount.is_integer() else str(amount))
+    lines = [line.strip() for line in source_text.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if fund_name not in line:
+            continue
+        chunk = []
+        for item in lines[index : index + 14]:
+            chunk.append(item)
+            if item == "明细":
+                break
+        joined = " ".join(chunk)
+        compact_joined = joined.replace("-", "").replace(" ", "")
+        if date_text not in joined and compact_date not in compact_joined:
+            continue
+        if amount_tokens and not any(token in joined for token in amount_tokens):
+            continue
+        if infer_candidate_status(joined) == CandidateStatus.ignored:
+            return joined
+        if any(word in joined for word in ("成功", "已确认", "确认成功")):
+            return "成功"
+    return ""
+
+
 def find_effective_nav(
     session: Session,
     fund_code: str,
@@ -1037,6 +1078,7 @@ def create_candidates_from_rows(
     rows: list[dict[str, Any]],
     source_file: str | None = None,
     source_hash: str | None = None,
+    source_text: str | None = None,
 ) -> tuple[int, list[str]]:
     created = 0
     warnings: list[str] = []
@@ -1080,8 +1122,10 @@ def create_candidates_from_rows(
             trade_date,
             submitted_at=submitted_at,
         )
+        source_status = source_status_for_row(row, source_text or "")
+        row_raw = {**row, "source_status": source_status} if source_status else row
         candidate = FundTransactionCandidate(
-            status=infer_candidate_status(str(row)),
+            status=infer_candidate_status(f"{row} {source_status}"),
             fund_code=fund_code,
             fund_name=str(row.get("fund_name") or ""),
             trade_date=effective_trade_date,
@@ -1094,7 +1138,7 @@ def create_candidates_from_rows(
             fee=fee,
             source_file=source_file,
             source_hash=source_hash,
-            raw_text=str(row),
+            raw_text=str(row_raw),
             confidence=0.85,
         )
         session.add(candidate)
@@ -1265,6 +1309,7 @@ def process_auto_import_job(payload: dict[str, Any]) -> str:
                         llm_result.parsed_json,
                         source_file=document.source_file,
                         source_hash=document.source_hash,
+                        source_text=text,
                     )
                     messages.append("DeepSeek 解析")
                     if parse_warnings:
@@ -1348,6 +1393,7 @@ def process_parse_job(payload: dict[str, Any]) -> str:
                     llm_result.parsed_json,
                     source_file=document.source_file,
                     source_hash=document.source_hash,
+                    source_text=text,
                 )
         if parsed_count == 0:
             parsed_count, parse_warnings2 = create_candidates_from_text(
@@ -3144,6 +3190,7 @@ def find_duplicate_transaction(
             FundTransaction.fund_code == candidate.fund_code,
             FundTransaction.trade_date == candidate.trade_date,
             FundTransaction.action == candidate.action,
+            FundTransaction.submitted_at == candidate.submitted_at,
             FundTransaction.source_file == candidate.source_file,
         )
     ).all()
@@ -3192,6 +3239,7 @@ def candidate_quality(session: Session, candidate: FundTransactionCandidate) -> 
                 FundTransactionCandidate.fund_code == candidate.fund_code,
                 FundTransactionCandidate.trade_date == candidate.trade_date,
                 FundTransactionCandidate.action == candidate.action,
+                FundTransactionCandidate.submitted_at == candidate.submitted_at,
             )
         ).all()
         same_key_count = sum(1 for item in siblings if candidate_duplicate_key(item) == candidate_duplicate_key(candidate))
@@ -3265,6 +3313,7 @@ def candidate_duplicate_key(candidate: FundTransactionCandidate) -> tuple | None
     return (
         candidate.fund_code,
         candidate.trade_date,
+        candidate.submitted_at.isoformat() if candidate.submitted_at else None,
         candidate.action.value,
         round(candidate.amount_cny, 2) if candidate.amount_cny is not None else None,
         round(candidate.share, 2) if candidate.share is not None else None,
