@@ -127,6 +127,11 @@
         <input type="hidden" name="return_to" value="{{ return_to }}">
         <button class="btn warn" type="submit">忽略</button>
       </form>
+      {% elif c.status.value == "ignored" %}
+      <form method="post" action="/candidates/{{ c.id }}/ignore">
+        <input type="hidden" name="return_to" value="{{ return_to }}">
+        <button class="btn" type="submit">取消忽略</button>
+      </form>
       {% endif %}
     </div>
   </section>

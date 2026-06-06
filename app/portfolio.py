@@ -73,8 +73,9 @@ def calculate_position_summaries(session: Session) -> list[PositionSummary]:
             sell_share = share or 0.0
             old_share = item["share"]
             cost_reduction = 0.0
-            if old_share > 0 and sell_share > 0:
-                cost_reduction = item["cost"] * min(sell_share / old_share, 1)
+            if old_share > EPS_SHARE and sell_share > 0:
+                ratio = min(sell_share / old_share, 1.0)
+                cost_reduction = item["cost"] * ratio
                 item["cost"] -= cost_reduction
             proceeds = amount or ((sell_share * tx.nav) if tx.nav else 0.0)
             net_proceeds = max(proceeds - fee, 0.0)

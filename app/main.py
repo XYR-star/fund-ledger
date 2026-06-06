@@ -284,6 +284,7 @@ def create_candidates_from_text(
         )
         session.add(
             FundTransactionCandidate(
+                status=infer_candidate_status(item.raw_text),
                 fund_code=fund_code,
                 fund_name=item.fund_name,
                 trade_date=effective_trade_date,
@@ -1060,6 +1061,7 @@ def create_candidates_from_rows(
             submitted_at=submitted_at,
         )
         candidate = FundTransactionCandidate(
+            status=infer_candidate_status(str(row)),
             fund_code=fund_code,
             fund_name=str(row.get("fund_name") or ""),
             trade_date=effective_trade_date,
@@ -2910,11 +2912,13 @@ def candidate_ignore(
     candidate = session.get(FundTransactionCandidate, candidate_id)
     if not candidate:
         raise HTTPException(status_code=404)
-    if candidate.status != CandidateStatus.confirmed:
+    if candidate.status == CandidateStatus.ignored:
+        candidate.status = CandidateStatus.pending
+    elif candidate.status != CandidateStatus.confirmed:
         candidate.status = CandidateStatus.ignored
-        candidate.updated_at = datetime.utcnow()
-        session.add(candidate)
-        session.commit()
+    candidate.updated_at = datetime.utcnow()
+    session.add(candidate)
+    session.commit()
     return redirect(safe_candidates_return(return_to))
 
 
