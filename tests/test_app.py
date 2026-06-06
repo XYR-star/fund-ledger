@@ -1258,6 +1258,10 @@ async def test_nav_sync_current_creates_daily_job(client):
 
 
 async def test_import_archive_delete_restore(client):
+    import app.db
+    from app.main import confirm_candidate_transaction
+    from app.models import FundTransaction, FundTransactionCandidate
+
     await login(client)
     await client.post(
         "/upload",
@@ -1275,12 +1279,23 @@ async def test_import_archive_delete_restore(client):
     detail = await client.get("/imports/1")
     assert "uploaded" in detail.text
 
+    with Session(app.db.engine) as session:
+        candidate = session.exec(select(FundTransactionCandidate)).first()
+        assert candidate is not None
+        assert confirm_candidate_transaction(session, candidate)
+        session.commit()
+        assert len(session.exec(select(FundTransactionCandidate)).all()) == 1
+        assert len(session.exec(select(FundTransaction)).all()) == 1
+
     response = await client.post("/imports/1/delete", follow_redirects=False)
     assert response.status_code == 303
     page = await client.get("/imports")
     assert "易方达蓝筹" not in page.text
     page = await client.get("/imports?show=all")
     assert "deleted" in page.text
+    with Session(app.db.engine) as session:
+        assert session.exec(select(FundTransactionCandidate)).all() == []
+        assert session.exec(select(FundTransaction)).all() == []
 
 
 async def test_minimal_buy_infers_nav_after_cutoff(client):

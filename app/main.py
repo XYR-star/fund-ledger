@@ -2580,6 +2580,7 @@ def import_delete(
     document = session.get(ImportDocument, document_id)
     if not document:
         raise HTTPException(status_code=404)
+    invalidated = invalidate_import_results(session, document)
     if document.source_file:
         path = Path(document.source_file)
         if path.exists() and path.is_file():
@@ -2589,7 +2590,10 @@ def import_delete(
     document.updated_at = datetime.utcnow()
     session.add(document)
     session.commit()
-    return redirect("/imports")
+    return redirect(
+        "/imports?message="
+        + f"导入已删除，已失效旧流水 {invalidated['transactions']} 条、旧候选 {invalidated['candidates']} 条"
+    )
 
 
 @app.post("/imports/{document_id}/ocr")
