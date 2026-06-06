@@ -245,6 +245,17 @@ def create_candidates_from_text(
     source_hash: str | None = None,
     config: dict[str, str] | None = None,
 ) -> tuple[int, list[str]]:
+    table_rows = extract_table_rows_from_ocr(raw_text)
+    if table_rows:
+        created, warnings = create_candidates_from_rows(
+            session,
+            table_rows,
+            source_file=source_file,
+            source_hash=source_hash,
+            source_text=raw_text,
+        )
+        if created:
+            return created, warnings
     extracted = extract_candidates(raw_text)
     if not extracted:
         return create_inferred_candidates_from_minimal_text(
@@ -635,6 +646,10 @@ def apply_default_fund_aliases(value: str) -> str:
     return text
 
 
+def normalize_fund_name_with_aliases_no_db(value: str) -> str:
+    return apply_default_fund_aliases(value)
+
+
 def extract_amount(text: str) -> float | None:
     cleaned = re.sub(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", " ", text)
     cleaned = re.sub(r"\d{1,2}:\d{2}", " ", cleaned)
@@ -686,6 +701,67 @@ def infer_candidate_status_for_row(row: dict[str, Any], source_text: str | None 
     return infer_candidate_status(f"{row} {source_status}")
 
 
+def extract_table_rows_from_ocr(source_text: str) -> list[dict[str, Any]]:
+    lines = [line.strip() for line in source_text.splitlines() if line.strip()]
+    rows: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        line = normalize_fund_name_with_aliases_no_db(lines[index])
+        if not _looks_like_fund_name_cell(line):
+            index += 1
+            continue
+        chunk = [line]
+        for item in lines[index + 1 : index + 18]:
+            chunk.append(normalize_fund_name_with_aliases_no_db(item))
+            if item == "明细":
+                break
+        row = table_chunk_to_row(chunk)
+        if row:
+            rows.append(row)
+            index += max(len(chunk), 1)
+        else:
+            index += 1
+    return rows
+
+
+def _looks_like_fund_name_cell(value: str) -> bool:
+    text = value.strip()
+    if len(text) < 4 or not any("\u4e00" <= ch <= "\u9fff" for ch in text):
+        return False
+    if any(word in text for word in ("名称", "创建时间", "交易类型", "交易渠道", "交易账户", "状态", "操作", "金额", "份额")):
+        return False
+    return any(word in text for word in ("基金", "债", "混合", "指数", "联接", "QDII", "股票", "货币", "短债", "红利", "高股息", "ETF"))
+
+
+def table_chunk_to_row(chunk: list[str]) -> dict[str, Any] | None:
+    joined = " ".join(chunk)
+    trade_day, submitted_at = extract_trade_datetime(joined)
+    amount = extract_amount(joined)
+    if not trade_day or amount is None:
+        return None
+    fund_name = chunk[0].strip()
+    fund_code = extract_fund_code(joined) or "000000"
+    return {
+        "fund_code": fund_code,
+        "fund_name": fund_name,
+        "trade_date": trade_day.isoformat(),
+        "submitted_at": submitted_at.strftime("%H:%M:%S") if submitted_at else "",
+        "action": infer_action(joined).value,
+        "amount_cny": amount if infer_action(joined) != TransactionAction.sell else None,
+        "share": amount if infer_action(joined) == TransactionAction.sell else None,
+        "transaction_status": source_status_from_chunk(joined),
+        "raw_chunk": joined,
+    }
+
+
+def source_status_from_chunk(text: str) -> str:
+    if infer_candidate_status(text) == CandidateStatus.ignored:
+        return text
+    if any(word in text for word in ("成功", "已确认", "确认成功")):
+        return "成功"
+    return ""
+
+
 def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
     if not source_text:
         return ""
@@ -715,10 +791,9 @@ def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
             continue
         if amount_tokens and not any(token in joined for token in amount_tokens):
             continue
-        if infer_candidate_status(joined) == CandidateStatus.ignored:
-            return joined
-        if any(word in joined for word in ("成功", "已确认", "确认成功")):
-            return "成功"
+        status = source_status_from_chunk(joined)
+        if status:
+            return status
     return ""
 
 
@@ -1303,7 +1378,7 @@ def process_auto_import_job(payload: dict[str, Any]) -> str:
                 messages.append(f"DeepSeek 解析失败，已回退规则解析：{exc}")
             else:
                 if llm_result and llm_result.parsed_json:
-                    document.ocr_text = llm_result.raw_response
+                    document.llm_text = llm_result.raw_response
                     parsed_count, parse_warnings = create_candidates_from_rows(
                         session,
                         llm_result.parsed_json,
@@ -1384,10 +1459,12 @@ def process_parse_job(payload: dict[str, Any]) -> str:
         parsed_count = 0
         parse_warnings: list[str] = []
         config = runtime_settings(session)
+        if not use_llm:
+            document.llm_text = ""
         if use_llm and is_deepseek_configured(config):
             llm_result = parse_with_deepseek(text, config)
             if llm_result and llm_result.parsed_json:
-                document.ocr_text = llm_result.raw_response
+                document.llm_text = llm_result.raw_response
                 parsed_count, parse_warnings = create_candidates_from_rows(
                     session,
                     llm_result.parsed_json,
@@ -2656,6 +2733,7 @@ def import_run_ocr(
     invalidated = invalidate_import_results(session, document)
     document.status = ImportStatus.ocr_running
     document.ocr_text = ""
+    document.llm_text = ""
     document.error_message = ""
     document.updated_at = datetime.utcnow()
     session.add(document)
@@ -2672,6 +2750,7 @@ def import_update_text(
     document_id: int,
     raw_text: str = Form(""),
     ocr_text: str = Form(""),
+    llm_text: str = Form(""),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -2680,6 +2759,7 @@ def import_update_text(
         raise HTTPException(status_code=404)
     document.raw_text = raw_text
     document.ocr_text = ocr_text
+    document.llm_text = llm_text
     document.updated_at = datetime.utcnow()
     session.add(document)
     session.commit()
@@ -2731,6 +2811,7 @@ def retry_import_document(session: Session, document: ImportDocument) -> tuple[B
     document.error_message = ""
     if document.source_file:
         document.ocr_text = ""
+    document.llm_text = ""
     document.status = ImportStatus.uploaded if document.source_file else ImportStatus.ocr_done
     document.updated_at = datetime.utcnow()
     session.add(document)

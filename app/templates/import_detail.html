@@ -118,8 +118,11 @@
     <label>手动文本
       <textarea name="raw_text">{{ document.raw_text }}</textarea>
     </label>
-    <label>OCR / LLM 文本
+    <label>OCR 原文
       <textarea name="ocr_text">{{ document.ocr_text }}</textarea>
+    </label>
+    <label>LLM 解析响应
+      <textarea name="llm_text">{{ document.llm_text }}</textarea>
     </label>
     <div class="actions">
       <button class="btn primary" type="submit">保存文本</button>

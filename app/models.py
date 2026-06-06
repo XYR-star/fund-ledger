@@ -75,6 +75,7 @@ class ImportDocument(SQLModel, table=True):
     status: ImportStatus = Field(default=ImportStatus.uploaded, index=True)
     raw_text: str = ""
     ocr_text: str = ""
+    llm_text: str = ""
     error_message: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

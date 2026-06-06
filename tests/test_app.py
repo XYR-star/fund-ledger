@@ -2169,3 +2169,108 @@ async def test_llm_row_uses_ocr_source_status_and_submitted_time_for_duplicates(
         transactions = session.exec(select(FundTransaction).order_by(FundTransaction.id)).all()
         assert len(transactions) == 2
         assert {tx.submitted_at.strftime("%H:%M") for tx in transactions} == {"09:38", "12:28"}
+
+
+async def test_auto_import_keeps_ocr_text_separate_from_llm_response(client, monkeypatch):
+    import app.db
+    import app.main
+    from app.llm import LlmParseResult
+    from app.models import CandidateStatus, FundTransactionCandidate, ImportDocument, ImportStatus
+    from app.ocr import OcrResult
+
+    await login(client)
+    ocr_text = "\n".join(
+        [
+            "名称",
+            "创建时间",
+            "交易类型",
+            "金额",
+            "状态",
+            "长城短债D",
+            "2026-04-14 11:48:36",
+            "申购",
+            "10000.00",
+            "已撤销",
+            "明细",
+        ]
+    )
+    llm_response = '[{"fund_code":"019872","fund_name":"长城短债D","trade_date":"2026-04-14","submitted_at":"11:48","action":"buy","amount_cny":10000}]'
+    monkeypatch.setattr(app.main, "recognize_file", lambda *_: OcrResult(text=ocr_text, confidence=0.99))
+    monkeypatch.setattr(app.main, "is_deepseek_configured", lambda config=None: True)
+    monkeypatch.setattr(
+        app.main,
+        "parse_with_deepseek",
+        lambda *_: LlmParseResult(
+            raw_response=llm_response,
+            parsed_json=[
+                {
+                    "fund_code": "019872",
+                    "fund_name": "长城短债D",
+                    "trade_date": "2026-04-14",
+                    "submitted_at": "11:48",
+                    "action": "buy",
+                    "amount_cny": 10000,
+                }
+            ],
+        ),
+    )
+    with Session(app.db.engine) as session:
+        document = ImportDocument(
+            file_name="cancelled.png",
+            source_file=str(app.main.settings.uploads_dir / "cancelled.png"),
+            source_hash="cancelled-hash",
+            status=ImportStatus.uploaded,
+        )
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        doc_id = document.id
+
+    message = app.main.process_auto_import_job({"document_id": doc_id})
+    assert "DeepSeek 解析" in message
+    with Session(app.db.engine) as session:
+        document = session.get(ImportDocument, doc_id)
+        assert document.ocr_text == ocr_text
+        assert document.llm_text == llm_response
+        candidate = session.exec(select(FundTransactionCandidate)).one()
+        assert candidate.status == CandidateStatus.ignored
+        assert "已撤销" in candidate.raw_text
+
+
+async def test_table_ocr_parser_extracts_status_before_llm(client):
+    import app.db
+    from app.main import create_candidates_from_text
+    from app.models import CandidateStatus, FundRule, FundTransactionCandidate
+
+    await login(client)
+    ocr_text = "\n".join(
+        [
+            "名称",
+            "创建时间",
+            "交易类型",
+            "金额",
+            "状态",
+            "长城短债D",
+            "2026-04-14 11:48:36",
+            "申购",
+            "10000.00",
+            "已撤销",
+            "明细",
+            "长城短债D",
+            "2026-04-17 09:38:14",
+            "申购",
+            "10000.00",
+            "成功",
+            "明细",
+        ]
+    )
+    with Session(app.db.engine) as session:
+        session.add(FundRule(fund_code="019872", fund_name="长城短债D"))
+        session.commit()
+        created, warnings = create_candidates_from_text(session, ocr_text, source_hash="table-hash")
+        session.commit()
+        candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
+        assert created == 2
+        assert "本地名称匹配 长城短债D → 019872" in warnings
+        assert [candidate.status for candidate in candidates] == [CandidateStatus.ignored, CandidateStatus.pending]
+        assert "已撤销" in candidates[0].raw_text

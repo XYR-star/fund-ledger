@@ -51,6 +51,12 @@ def migrate_schema() -> None:
             }
             if "submitted_at" not in candidate_columns:
                 connection.execute(text("ALTER TABLE fundtransactioncandidate ADD COLUMN submitted_at TIME"))
+        if "importdocument" in tables:
+            import_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(importdocument)"))
+            }
+            if "llm_text" not in import_columns:
+                connection.execute(text("ALTER TABLE importdocument ADD COLUMN llm_text TEXT DEFAULT ''"))
         if "fundtransaction" in tables:
             transaction_columns = {
                 row[1] for row in connection.execute(text("PRAGMA table_info(fundtransaction)"))
