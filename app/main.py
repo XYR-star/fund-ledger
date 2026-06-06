@@ -409,13 +409,15 @@ def create_inferred_candidates_from_minimal_text(
         if not trade_day:
             warnings.append(f"跳过（无法识别日期）：{text[:60]}")
             continue
-        if amount is None:
+        if amount is None or amount <= 0:
             warnings.append(f"跳过（无法识别金额）：{text[:60]}")
             continue
         action = infer_action(text)
         status = infer_candidate_status(text)
         fund_code = extract_fund_code(text)
         fund_name = extract_fund_name(text, fund_code, known_names)
+        if fund_code is None and _is_fund_name_garbage(fund_name):
+            continue
         if _is_etf_text(text) or _is_etf_text(fund_name):
             warnings.append(f"跳过 ETF 基金 {fund_name or text[:40]}")
             continue
@@ -507,6 +509,14 @@ def is_etf_fund(session: Session, fund_code: str) -> bool:
 def _is_etf_text(text: str) -> bool:
     upper = text.upper()
     return "ETF" in upper and "联接" not in text and "连接" not in text
+
+
+def _is_fund_name_garbage(name: str) -> bool:
+    if not name or all(ch in "0123456789 :.-/" for ch in name):
+        return True
+    if len(name) <= 3 and not any("\u4e00" <= ch <= "\u9fff" for ch in name):
+        return True
+    return False
 
 
 def is_money_fund(session: Session, fund_code: str) -> bool:
@@ -1259,7 +1269,38 @@ def process_auto_import_job(payload: dict[str, Any]) -> str:
         messages.append(f"候选 {parsed_count} 条")
         if fund_codes:
             messages.append(f"基金 {', '.join(sorted(fund_codes))}")
+        _auto_sync_resolved_rules(session)
         return "；".join(messages)
+
+
+def _auto_sync_resolved_rules(session: Session) -> None:
+    resolved = session.exec(
+        select(FundRule).where(FundRule.sync_source == "resolved")
+    ).all()
+    for rule in resolved:
+        try:
+            synced = fetch_fund_rule_from_akshare(rule.fund_code)
+            rule.fund_name = synced.fund_name or rule.fund_name
+            rule.fund_type = synced.fund_type or rule.fund_type
+            if synced.buy_confirm_days is not None:
+                rule.buy_confirm_days = synced.buy_confirm_days
+            if synced.sell_confirm_days is not None:
+                rule.sell_confirm_days = synced.sell_confirm_days
+            if synced.buy_fee_rate is not None:
+                rule.buy_fee_rate = synced.buy_fee_rate
+            rule.sync_source = synced.source
+            rule.synced_at = sync_timestamp()
+            rule.updated_at = datetime.utcnow()
+            session.add(rule)
+            if synced.fee_tiers:
+                for t in session.exec(select(FundFeeTier).where(FundFeeTier.fund_code == rule.fund_code)).all():
+                    session.delete(t)
+                for min_d, max_d, rate in synced.fee_tiers:
+                    session.add(FundFeeTier(fund_code=rule.fund_code, min_holding_days=min_d, max_holding_days=max_d, redemption_fee_rate=rate, updated_at=datetime.utcnow()))
+        except Exception:
+            pass
+    if resolved:
+        session.commit()
 
 
 def process_parse_job(payload: dict[str, Any]) -> str:
@@ -2753,7 +2794,7 @@ def candidates_page(
             and not quality_by_candidate.get(c.id, {}).get("auto_confirmable")
         ]
     matched = [c for c in candidates if c.fund_code != "000000"]
-    unmatched_candidates = [c for c in candidates if c.fund_code == "000000"]
+    unmatched_candidates = [c for c in candidates if c.fund_code == "000000" and c.status == CandidateStatus.pending]
     if unmatched:
         matched = []
     selected_document = None

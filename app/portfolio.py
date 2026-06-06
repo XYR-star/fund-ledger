@@ -6,8 +6,8 @@ from sqlmodel import Session, desc, select
 
 from .models import FundNav, FundRule, FundTransaction, TransactionAction
 
-EPS_SHARE = 0.000001
-EPS_COST = 0.01
+EPS_SHARE = 0.5
+EPS_COST = 1.0
 
 
 @dataclass
