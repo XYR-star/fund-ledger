@@ -1386,7 +1386,7 @@ async def test_money_fund_uses_cash_equivalent_values(client):
     import app.db
     from app.main import create_candidates_from_rows, normalize_money_fund_records
     from app.models import FundRule, FundTransaction, FundTransactionCandidate, TransactionAction
-    from app.portfolio import calculate_holdings
+    from app.portfolio import calculate_holdings, calculate_position_summaries
 
     await login(client)
     with Session(app.db.engine) as session:
@@ -1442,7 +1442,8 @@ async def test_money_fund_uses_cash_equivalent_values(client):
     with Session(app.db.engine) as session:
         tx = session.exec(select(FundTransaction)).first()
         assert (tx.amount_cny, tx.share, tx.nav, tx.fee) == (700, 700, 1.0, 0.0)
-        holding = calculate_holdings(session)[0]
+        assert calculate_holdings(session) == []
+        holding = calculate_position_summaries(session, include_money=True)[0]
         assert holding.latest_nav == 1.0
         assert holding.market_value == 700
 
@@ -1486,7 +1487,8 @@ async def test_same_day_money_buy_is_applied_before_sell_for_cost(client):
             )
         )
         session.commit()
-        position = calculate_position_summaries(session)[0]
+        assert calculate_position_summaries(session) == []
+        position = calculate_position_summaries(session, include_money=True)[0]
 
     assert position.share == 0
     assert position.cost == 0

@@ -33,18 +33,24 @@ class PositionSummary(Holding):
     is_closed: bool
 
 
-def calculate_position_summaries(session: Session) -> list[PositionSummary]:
-    txs = sorted(
-        session.exec(select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)).all(),
-        key=lambda tx: (tx.trade_date, action_sort_key(tx.action), tx.id or 0),
-    )
-    money_codes = {
+def money_fund_codes(session: Session) -> set[str]:
+    return {
         rule.fund_code
         for rule in session.exec(select(FundRule)).all()
         if "货币" in (rule.fund_type or "")
     }
+
+
+def calculate_position_summaries(session: Session, include_money: bool = False) -> list[PositionSummary]:
+    txs = sorted(
+        session.exec(select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)).all(),
+        key=lambda tx: (tx.trade_date, action_sort_key(tx.action), tx.id or 0),
+    )
+    money_codes = money_fund_codes(session)
     grouped: dict[str, dict] = {}
     for tx in txs:
+        if not include_money and tx.fund_code in money_codes:
+            continue
         item = grouped.setdefault(
             tx.fund_code,
             {
@@ -197,10 +203,13 @@ def action_sort_key(action: TransactionAction) -> int:
     return 3
 
 
-def xalpha_rows(session: Session) -> list[dict]:
+def xalpha_rows(session: Session, include_money: bool = False) -> list[dict]:
     rows = []
+    money_codes = money_fund_codes(session)
     txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date)).all()
     for tx in txs:
+        if not include_money and tx.fund_code in money_codes:
+            continue
         trade = 0.0
         if tx.action == TransactionAction.buy:
             trade = tx.amount_cny or 0.0

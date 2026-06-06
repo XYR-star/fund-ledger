@@ -43,7 +43,7 @@ from .models import (
 from .nav import sync_nav_for_fund
 from .ocr import recognize_file
 from .performance import build_performance_charts, format_return, sync_hs300
-from .portfolio import calculate_holdings, calculate_position_summaries, xalpha_rows
+from .portfolio import calculate_holdings, calculate_position_summaries, money_fund_codes, xalpha_rows
 from .templates import templates
 
 
@@ -2015,10 +2015,13 @@ def repair_run(
 
 def analytics_summary(session: Session) -> dict[str, Any]:
     positions = calculate_position_summaries(session)
+    money_codes = money_fund_codes(session)
     txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date)).all()
     monthly: dict[str, float] = {}
     dividends = 0.0
     for tx in txs:
+        if tx.fund_code in money_codes:
+            continue
         key = tx.trade_date.strftime("%Y-%m")
         if tx.action == TransactionAction.buy:
             monthly[key] = monthly.get(key, 0.0) + (tx.amount_cny or 0.0) + (tx.fee or 0.0)
