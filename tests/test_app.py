@@ -2002,3 +2002,45 @@ async def test_failed_minimal_order_is_ignored(client):
     )
     page = await wait_for_text(client, "/candidates", "ignored")
     assert "ignored" in page.text
+
+
+async def test_cancelled_llm_row_is_ignored_and_not_confirmed(client):
+    import app.db
+    from app.main import confirm_candidate_transaction, create_candidates_from_rows
+    from app.models import CandidateStatus, FundNav, FundTransaction, FundTransactionCandidate
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(FundNav(fund_code="161725", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        create_candidates_from_rows(
+            session,
+            [
+                {
+                    "fund_code": "161725",
+                    "fund_name": "招商中证白酒",
+                    "trade_date": "2024-01-02",
+                    "action": "buy",
+                    "amount_cny": 1000,
+                    "transaction_status": "已撤销",
+                },
+                {
+                    "fund_code": "161725",
+                    "fund_name": "招商中证白酒",
+                    "trade_date": "2024-01-02",
+                    "action": "buy",
+                    "amount_cny": 500,
+                    "status": "ignored",
+                },
+            ],
+        )
+        session.commit()
+        candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
+        assert [candidate.status for candidate in candidates] == [CandidateStatus.ignored, CandidateStatus.ignored]
+
+        candidates[0].status = CandidateStatus.pending
+        session.add(candidates[0])
+        assert not confirm_candidate_transaction(session, candidates[0])
+        session.commit()
+
+        assert session.exec(select(FundTransaction)).all() == []
+        assert session.get(FundTransactionCandidate, candidates[0].id).status == CandidateStatus.ignored

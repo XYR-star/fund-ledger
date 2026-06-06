@@ -656,7 +656,27 @@ def infer_action(text: str) -> TransactionAction:
 
 
 def infer_candidate_status(text: str) -> CandidateStatus:
-    if any(word in text for word in ("撤销", "取消", "失败", "未成功")):
+    if any(
+        word in text
+        for word in (
+            "撤销",
+            "已撤销",
+            "撤单",
+            "已撤单",
+            "取消",
+            "已取消",
+            "失败",
+            "未成功",
+            "不成功",
+            "作废",
+            "已作废",
+            "交易关闭",
+            "已关闭",
+            "申请失败",
+            "确认失败",
+            "ignored",
+        )
+    ):
         return CandidateStatus.ignored
     return CandidateStatus.pending
 
@@ -2980,6 +3000,11 @@ def candidates_auto_confirm_safe(
 
 def confirm_candidate_transaction(session: Session, candidate: FundTransactionCandidate) -> bool:
     if candidate.status == CandidateStatus.confirmed:
+        return False
+    if infer_candidate_status(candidate.raw_text) == CandidateStatus.ignored:
+        candidate.status = CandidateStatus.ignored
+        candidate.updated_at = datetime.utcnow()
+        session.add(candidate)
         return False
     backfill_candidate_values(session, candidate)
     existing = session.exec(select(FundTransaction).where(FundTransaction.candidate_id == candidate.id)).first()
