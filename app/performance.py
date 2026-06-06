@@ -93,7 +93,7 @@ def build_performance_charts(
         start_date = start_dates[fund_code]
         fund_points = normalize_nav_points(
             [
-                (item.nav_date, 1.0 if fund_code in money_codes else item.unit_nav)
+                (item.nav_date, 1.0 if fund_code in money_codes else (item.accumulated_nav if item.accumulated_nav and item.accumulated_nav > 0 else item.unit_nav))
                 for item in navs
                 if item.nav_date >= start_date
             ]

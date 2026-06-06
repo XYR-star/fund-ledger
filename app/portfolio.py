@@ -82,10 +82,10 @@ def calculate_position_summaries(session: Session) -> list[PositionSummary]:
             item["realized_profit"] += net_proceeds - cost_reduction
             item["share"] -= sell_share
         elif tx.action == TransactionAction.dividend:
-            item["cost"] -= amount
-            item["realized_profit"] += amount
+            item["realized_profit"] += amount or 0.0
         elif tx.action == TransactionAction.dividend_reinvest:
             item["share"] += share or 0.0
+            item["realized_profit"] += amount or 0.0
 
     positions: list[PositionSummary] = []
     latest_navs = latest_nav_by_fund(session, set(grouped))

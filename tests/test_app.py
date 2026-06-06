@@ -1819,8 +1819,8 @@ async def test_dividend_and_reinvest_calculation(client):
         session.commit()
         position = calculate_position_summaries(session)[0]
     assert position.share == 60
-    assert position.cost == 95
-    assert position.realized_profit == 5
+    assert position.cost == 100
+    assert position.realized_profit == 25
 
 
 async def test_fund_rule_auto_sync_creates_rule_and_tiers(client, monkeypatch):
