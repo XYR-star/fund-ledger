@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}操作审计 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>操作审计</h1>
+    <p class="muted">最近 100 条关键操作记录。</p>
+  </div>
+</div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>时间</th><th>动作</th><th>对象</th><th>ID</th><th>详情</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr><td>{{ row.created_at }}</td><td>{{ row.action }}</td><td>{{ row.target_type }}</td><td>{{ row.target_id }}</td><td>{{ row.detail }}</td></tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">暂无审计记录。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

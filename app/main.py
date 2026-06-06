@@ -29,6 +29,7 @@ from .models import (
     CandidateStatus,
     AppSetting,
     FundFeeTier,
+    FundAlias,
     FundNav,
     FundRule,
     FundTransaction,
@@ -36,6 +37,7 @@ from .models import (
     ImportDocument,
     ImportStatus,
     JobStatus,
+    OperationAudit,
     TransactionAction,
 )
 from .nav import sync_nav_for_fund
@@ -68,6 +70,7 @@ def register_background_jobs() -> None:
     register_job("sync_benchmark", process_benchmark_job)
     register_job("sync_fund_rule", process_fund_rule_sync_job)
     register_job("daily_market_sync", process_daily_market_sync_job)
+    register_job("auto_backup", process_auto_backup_job)
 
 
 def start_daily_market_sync_scheduler() -> None:
@@ -87,6 +90,7 @@ def daily_market_sync_scheduler_loop() -> None:
     while True:
         try:
             maybe_enqueue_daily_market_sync()
+            maybe_enqueue_auto_backup()
         except Exception:
             pass
         time_module.sleep(60)
@@ -117,6 +121,45 @@ def maybe_enqueue_daily_market_sync(now: datetime | None = None) -> BackgroundJo
         )
         save_settings(session, {"AUTO_MARKET_SYNC_LAST_RUN_DATE": today_key})
         return job
+
+
+def maybe_enqueue_auto_backup(now: datetime | None = None) -> BackgroundJob | None:
+    with Session(engine) as session:
+        config = runtime_settings(session)
+        if config.get("AUTO_BACKUP_ENABLED", "true") != "true":
+            return None
+        tz_name = config.get("AUTO_BACKUP_TIMEZONE", "Asia/Shanghai") or "Asia/Shanghai"
+        try:
+            tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            tz = ZoneInfo("Asia/Shanghai")
+            tz_name = "Asia/Shanghai"
+        now = now.astimezone(tz) if now else datetime.now(tz)
+        target_time = parse_optional_time_value(config.get("AUTO_BACKUP_TIME")) or time(2, 10)
+        if now.hour != target_time.hour or now.minute != target_time.minute:
+            return None
+        today_key = now.date().isoformat()
+        if config.get("AUTO_BACKUP_LAST_RUN_DATE") == today_key:
+            return None
+        job = create_and_enqueue(
+            session,
+            "auto_backup",
+            {"date": today_key, "timezone": tz_name, "scheduled_time": target_time.strftime("%H:%M")},
+        )
+        save_settings(session, {"AUTO_BACKUP_LAST_RUN_DATE": today_key})
+        return job
+
+
+def audit_log(session: Session, action: str, target_type: str, target_id: str = "", detail: str = "") -> None:
+    session.add(
+        OperationAudit(
+            action=action,
+            target_type=target_type,
+            target_id=str(target_id or ""),
+            detail=detail,
+            created_at=datetime.utcnow(),
+        )
+    )
 
 
 def require_user(request: Request) -> str:
@@ -217,6 +260,8 @@ def create_candidates_from_text(
     known_names = known_fund_names(session)
     for item in extracted:
         fund_code = item.fund_code.zfill(6)
+        item.fund_name = normalize_fund_name_with_aliases(session, item.fund_name)
+        item.raw_text = apply_default_fund_aliases(item.raw_text)
         if _is_etf_text(item.raw_text) or _is_etf_text(item.fund_name):
             warnings.append(f"跳过 ETF 基金 {item.fund_name}")
             continue
@@ -268,6 +313,10 @@ def _resolve_fund_code(
 ) -> str | None:
     if not fund_name:
         return None
+    original_name = fund_name
+    fund_name = normalize_fund_name_with_aliases(session, fund_name)
+    if fund_name != original_name:
+        warnings.append(f"名称纠错 {original_name} → {fund_name}")
     if fund_name in llm_cache:
         return llm_cache[fund_name]
     known_code = find_known_fund_code(fund_name, known_names)
@@ -315,6 +364,31 @@ def find_known_fund_code(fund_name: str, known_names: dict[str, str]) -> str | N
     return matches[0] if len(set(matches)) == 1 else None
 
 
+DEFAULT_FUND_ALIASES = {
+    "5OETF": "50ETF",
+    "5OET": "50ET",
+    "QDI）": "QDII）",
+    "QDI)": "QDII)",
+    "（QDI）": "（QDII）",
+    "(QDI)": "(QDII)",
+}
+
+
+def fund_alias_pairs(session: Session) -> list[tuple[str, str]]:
+    pairs = list(DEFAULT_FUND_ALIASES.items())
+    for alias in session.exec(select(FundAlias).order_by(FundAlias.id)).all():
+        if alias.pattern:
+            pairs.append((alias.pattern, alias.replacement))
+    return pairs
+
+
+def normalize_fund_name_with_aliases(session: Session, value: str) -> str:
+    text = value or ""
+    for pattern, replacement in fund_alias_pairs(session):
+        text = text.replace(pattern, replacement)
+    return text
+
+
 def create_inferred_candidates_from_minimal_text(
     session: Session,
     raw_text: str,
@@ -327,7 +401,7 @@ def create_inferred_candidates_from_minimal_text(
     known_names = known_fund_names(session)
     llm_code_cache: dict[str, str] = {}
     for line in raw_text.splitlines():
-        text = line.strip()
+        text = normalize_fund_name_with_aliases(session, line.strip())
         if not text or text.startswith("#"):
             continue
         trade_day, submitted_at = extract_trade_datetime(text)
@@ -408,6 +482,10 @@ def known_fund_names(session: Session) -> dict[str, str]:
     for item in session.exec(select(FundTransaction)).all():
         if item.fund_name and item.fund_code != "000000":
             names[item.fund_name] = item.fund_code
+    for name, code in list(names.items()):
+        normalized = normalize_fund_name_with_aliases(session, name)
+        if normalized and normalized != name:
+            names[normalized] = code
     return names
 
 
@@ -518,6 +596,7 @@ def extract_fund_code(text: str) -> str | None:
 
 
 def extract_fund_name(text: str, fund_code: str | None, known_names: dict[str, str]) -> str:
+    text = apply_default_fund_aliases(text)
     for name in sorted(known_names, key=len, reverse=True):
         if name and name in text:
             return name
@@ -536,6 +615,13 @@ def extract_fund_name(text: str, fund_code: str | None, known_names: dict[str, s
         if any("\u4e00" <= ch <= "\u9fff" for ch in part):
             return part
     return parts[0] if parts else ""
+
+
+def apply_default_fund_aliases(value: str) -> str:
+    text = value or ""
+    for pattern, replacement in DEFAULT_FUND_ALIASES.items():
+        text = text.replace(pattern, replacement)
+    return text
 
 
 def extract_amount(text: str) -> float | None:
@@ -930,7 +1016,8 @@ def create_candidates_from_rows(
         fund_code = str(row.get("fund_code") or "").strip().zfill(6)
         if not trade_date or not fund_code.isdigit() or len(fund_code) != 6:
             continue
-        fund_name = str(row.get("fund_name") or "")
+        fund_name = normalize_fund_name_with_aliases(session, str(row.get("fund_name") or ""))
+        row["fund_name"] = fund_name
         if _is_etf_text(fund_name) or _is_etf_text(str(row)):
             warnings.append(f"跳过 ETF 基金 {fund_name}")
             continue
@@ -1367,6 +1454,44 @@ def process_fund_rule_sync_job(payload: dict[str, Any]) -> str:
         return f"{code} 规则同步完成"
 
 
+def process_auto_backup_job(payload: dict[str, Any]) -> str:
+    with Session(engine) as session:
+        path = write_backup_file(session)
+        config = runtime_settings(session)
+        keep = parse_int_value(config.get("AUTO_BACKUP_KEEP"), 30)
+        prune_backup_files(keep)
+        audit_log(session, "backup.auto", "backup", path.name, str(path))
+        session.commit()
+        return f"自动备份完成：{path.name}"
+
+
+def backup_dir() -> Path:
+    path = settings.data_dir / "backups"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_backup_file(session: Session) -> Path:
+    payload = create_backup_payload(session)
+    stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    path = backup_dir() / f"fund-ledger-backup-{stamp}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def prune_backup_files(keep: int) -> None:
+    files = sorted(backup_dir().glob("fund-ledger-backup-*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for path in files[max(keep, 1):]:
+        path.unlink(missing_ok=True)
+
+
+def parse_int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def backup_counts(payload: dict[str, Any]) -> dict[str, int]:
     return {
         key: len(payload.get(key) or [])
@@ -1378,6 +1503,8 @@ def backup_counts(payload: dict[str, Any]) -> dict[str, int]:
             "fund_rules",
             "fund_fee_tiers",
             "benchmark_nav",
+            "aliases",
+            "audits",
             "settings",
         )
     }
@@ -1432,6 +1559,20 @@ def restore_backup_payload(session: Session, payload: dict[str, Any]) -> dict[st
             continue
         session.add(FundFeeTier(**_model_data(item, {"updated_at"})))
         counts["fund_fee_tiers"] += 1
+
+    for item in payload.get("aliases") or []:
+        existing = session.get(FundAlias, item.get("id"))
+        if existing:
+            continue
+        session.add(FundAlias(**_model_data(item, {"created_at", "updated_at"})))
+        counts["aliases"] += 1
+
+    for item in payload.get("audits") or []:
+        existing = session.get(OperationAudit, item.get("id"))
+        if existing:
+            continue
+        session.add(OperationAudit(**_model_data(item, {"created_at"})))
+        counts["audits"] += 1
 
     for item in payload.get("nav") or []:
         nav_date = parse_date_value(item.get("nav_date"))
@@ -1781,6 +1922,159 @@ def health_page(
     return templates.TemplateResponse("health.html", {"request": request, "report": report})
 
 
+def repair_preview(session: Session) -> dict[str, int]:
+    candidates = session.exec(select(FundTransactionCandidate).where(FundTransactionCandidate.status == CandidateStatus.pending)).all()
+    transactions = session.exec(select(FundTransaction)).all()
+    return {
+        "candidate_backfillable": sum(1 for item in candidates if _candidate_needs_value_backfill(item)),
+        "transaction_backfillable": sum(1 for item in transactions if _transaction_needs_value_backfill(item)),
+        "money_records": sum(
+            1
+            for item in [*candidates, *transactions]
+            if item.fund_code != "000000" and is_money_fund(session, item.fund_code)
+        ),
+    }
+
+
+@app.get("/repair", response_class=HTMLResponse)
+def repair_page(
+    request: Request,
+    message: str = "",
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    return templates.TemplateResponse(
+        "repair.html",
+        {"request": request, "preview": repair_preview(session), "message": message},
+    )
+
+
+@app.post("/repair/run")
+def repair_run(
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    tx_changed = backfill_incomplete_transaction_values(session)
+    candidate_changed = 0
+    for candidate in session.exec(
+        select(FundTransactionCandidate).where(FundTransactionCandidate.status == CandidateStatus.pending)
+    ).all():
+        if backfill_candidate_values(session, candidate):
+            candidate_changed += 1
+    if candidate_changed:
+        session.commit()
+    money_changed = normalize_money_fund_records()
+    audit_log(
+        session,
+        "repair.run",
+        "system",
+        detail=f"transactions={tx_changed}; candidates={candidate_changed}; money={money_changed}",
+    )
+    session.commit()
+    return redirect(
+        "/repair?message="
+        + f"自动修复完成：流水 {tx_changed}，候选 {candidate_changed}，货币基金规范化 {money_changed}"
+    )
+
+
+def analytics_summary(session: Session) -> dict[str, Any]:
+    positions = calculate_position_summaries(session)
+    txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date)).all()
+    monthly: dict[str, float] = {}
+    dividends = 0.0
+    for tx in txs:
+        key = tx.trade_date.strftime("%Y-%m")
+        if tx.action == TransactionAction.buy:
+            monthly[key] = monthly.get(key, 0.0) + (tx.amount_cny or 0.0) + (tx.fee or 0.0)
+        elif tx.action == TransactionAction.dividend:
+            dividends += tx.amount_cny or 0.0
+    closed = [item for item in positions if item.is_closed]
+    active = [item for item in positions if not item.is_closed]
+    return {
+        "active": active,
+        "closed": sorted(closed, key=lambda item: item.realized_profit, reverse=True),
+        "monthly": sorted(monthly.items()),
+        "total_buy": sum(item.total_buy_amount for item in positions),
+        "total_sell": sum(item.total_sell_amount for item in positions),
+        "total_dividend": dividends,
+        "closed_profit": sum(item.realized_profit for item in closed),
+        "active_profit": sum(item.profit for item in active),
+    }
+
+
+@app.get("/analytics", response_class=HTMLResponse)
+def analytics_page(
+    request: Request,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    return templates.TemplateResponse(
+        "analytics.html",
+        {"request": request, "summary": analytics_summary(session)},
+    )
+
+
+@app.get("/aliases", response_class=HTMLResponse)
+def aliases_page(
+    request: Request,
+    message: str = "",
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    aliases = session.exec(select(FundAlias).order_by(FundAlias.id)).all()
+    return templates.TemplateResponse(
+        "aliases.html",
+        {
+            "request": request,
+            "aliases": aliases,
+            "defaults": DEFAULT_FUND_ALIASES,
+            "message": message,
+        },
+    )
+
+
+@app.post("/aliases")
+def alias_create(
+    pattern: str = Form(...),
+    replacement: str = Form(""),
+    notes: str = Form(""),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    alias = FundAlias(pattern=pattern.strip(), replacement=replacement.strip(), notes=notes.strip())
+    session.add(alias)
+    session.flush()
+    audit_log(session, "alias.create", "fund_alias", str(alias.id), f"{alias.pattern} -> {alias.replacement}")
+    session.commit()
+    return redirect("/aliases?message=别名规则已添加")
+
+
+@app.post("/aliases/{alias_id}/delete")
+def alias_delete(
+    alias_id: int,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    alias = session.get(FundAlias, alias_id)
+    if not alias:
+        raise HTTPException(status_code=404)
+    detail = f"{alias.pattern} -> {alias.replacement}"
+    session.delete(alias)
+    audit_log(session, "alias.delete", "fund_alias", str(alias_id), detail)
+    session.commit()
+    return redirect("/aliases?message=别名规则已删除")
+
+
+@app.get("/audit", response_class=HTMLResponse)
+def audit_page(
+    request: Request,
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    rows = session.exec(select(OperationAudit).order_by(desc(OperationAudit.created_at)).limit(100)).all()
+    return templates.TemplateResponse("audit.html", {"request": request, "rows": rows})
+
+
 @app.head("/")
 def dashboard_head(request: Request):
     if not current_user(request):
@@ -1829,6 +2123,10 @@ def settings_update(
     auto_market_sync_enabled: str = Form("off"),
     auto_market_sync_time: str = Form("21:30"),
     auto_market_sync_timezone: str = Form("Asia/Shanghai"),
+    auto_backup_enabled: str = Form("off"),
+    auto_backup_time: str = Form("02:10"),
+    auto_backup_timezone: str = Form("Asia/Shanghai"),
+    auto_backup_keep: str = Form("30"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -1855,6 +2153,10 @@ def settings_update(
         "AUTO_MARKET_SYNC_ENABLED": "true" if auto_market_sync_enabled == "on" else "false",
         "AUTO_MARKET_SYNC_TIME": auto_market_sync_time.strip() or "21:30",
         "AUTO_MARKET_SYNC_TIMEZONE": auto_market_sync_timezone.strip() or "Asia/Shanghai",
+        "AUTO_BACKUP_ENABLED": "true" if auto_backup_enabled == "on" else "false",
+        "AUTO_BACKUP_TIME": auto_backup_time.strip() or "02:10",
+        "AUTO_BACKUP_TIMEZONE": auto_backup_timezone.strip() or "Asia/Shanghai",
+        "AUTO_BACKUP_KEEP": str(max(parse_int_value(auto_backup_keep, 30), 1)),
     }
     save_settings(session, values)
     return redirect("/settings?message=设置已保存")
@@ -2327,15 +2629,20 @@ def import_audit(session: Session, document: ImportDocument) -> dict[str, int]:
         transactions = session.exec(
             select(FundTransaction).where(FundTransaction.source_file == document.source_file)
         ).all()
+    low_confidence = sum(1 for item in candidates if (item.confidence or 0) < 0.75)
+    confirmed = sum(1 for item in candidates if item.status == CandidateStatus.confirmed)
+    total = len(candidates)
     return {
         "candidates": len(candidates),
         "pending": sum(1 for item in candidates if item.status == CandidateStatus.pending),
-        "confirmed": sum(1 for item in candidates if item.status == CandidateStatus.confirmed),
+        "confirmed": confirmed,
         "ignored": sum(1 for item in candidates if item.status == CandidateStatus.ignored),
         "unmatched": sum(1 for item in candidates if item.fund_code == "000000"),
         "transactions": len(transactions),
         "duplicate_candidates": count_duplicate_candidate_groups(candidates),
         "auto_confirmable": sum(1 for item in candidates if candidate_quality(session, item)["auto_confirmable"]),
+        "low_confidence": low_confidence,
+        "success_rate": round(confirmed / total * 100) if total else 0,
     }
 
 
@@ -2373,6 +2680,10 @@ def import_audits_for_documents(
             "transactions": transactions_by_file.get(document.source_file or "", 0),
             "duplicate_candidates": count_duplicate_candidate_groups(candidates),
             "auto_confirmable": sum(1 for item in candidates if candidate_quality(session, item)["auto_confirmable"]),
+            "low_confidence": sum(1 for item in candidates if (item.confidence or 0) < 0.75),
+            "success_rate": round(
+                sum(1 for item in candidates if item.status == CandidateStatus.confirmed) / len(candidates) * 100
+            ) if candidates else 0,
         }
     return audits
 
@@ -2389,6 +2700,7 @@ def summarize_imports(
         "unmatched": sum(audit["unmatched"] for audit in audits.values()),
         "transactions": sum(audit["transactions"] for audit in audits.values()),
         "auto_confirmable": sum(audit["auto_confirmable"] for audit in audits.values()),
+        "low_confidence": sum(audit["low_confidence"] for audit in audits.values()),
     }
 
 
@@ -2674,6 +2986,7 @@ def confirm_candidate_transaction(session: Session, candidate: FundTransactionCa
     candidate.confirmed_transaction_id = tx.id
     candidate.updated_at = datetime.utcnow()
     session.add(candidate)
+    audit_log(session, "candidate.confirm", "candidate", str(candidate.id), f"transaction={tx.id}; {candidate.fund_code}")
     return True
 
 
@@ -3074,6 +3387,8 @@ def transaction_create(
         raw_text=note.strip(),
     )
     session.add(tx)
+    session.flush()
+    audit_log(session, "transaction.create", "transaction", str(tx.id), f"{code} {action.value} {amount_cny}")
     session.commit()
     return transactions_redirect_with_message(return_to, "手动流水已新增")
 
@@ -3127,6 +3442,7 @@ def transaction_update(
     tx.fee = fee
     tx.raw_text = note.strip()
     session.add(tx)
+    audit_log(session, "transaction.update", "transaction", str(tx.id), f"{code} {action.value} {amount_cny}")
     session.commit()
     return transactions_redirect_with_message(return_to, "流水已更新")
 
@@ -3148,7 +3464,10 @@ def transaction_delete(
             candidate.confirmed_transaction_id = None
             candidate.updated_at = datetime.utcnow()
             session.add(candidate)
+    tx_id = tx.id
+    detail = f"{tx.fund_code} {tx.action.value} {tx.amount_cny}"
     session.delete(tx)
+    audit_log(session, "transaction.delete", "transaction", str(tx_id), detail)
     session.commit()
     return transactions_redirect_with_message(return_to, "流水已删除")
 
@@ -3295,7 +3614,26 @@ def backup_page(
     message: str = "",
     _: str = Depends(require_user),
 ):
-    return templates.TemplateResponse("backup.html", {"request": request, "message": message})
+    backups = sorted(backup_dir().glob("fund-ledger-backup-*.json"), key=lambda item: item.stat().st_mtime, reverse=True)[:20]
+    return templates.TemplateResponse(
+        "backup.html",
+        {
+            "request": request,
+            "message": message,
+            "backups": [{"name": item.name, "size": item.stat().st_size, "mtime": datetime.utcfromtimestamp(item.stat().st_mtime)} for item in backups],
+        },
+    )
+
+
+@app.post("/backup/create")
+def backup_create(
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    path = write_backup_file(session)
+    audit_log(session, "backup.manual_file", "backup", path.name, str(path))
+    session.commit()
+    return redirect(f"/backup?message=备份文件已生成：{path.name}")
 
 
 @app.post("/backup/preview", response_class=HTMLResponse)
@@ -3343,6 +3681,8 @@ def backup_restore(
             {"request": request, "message": f"恢复失败：{exc}"},
             status_code=400,
         )
+    audit_log(session, "backup.restore", "backup", detail=json.dumps(counts, ensure_ascii=False))
+    session.commit()
     message = "恢复完成：" + "，".join(f"{key} {value}" for key, value in counts.items())
     return templates.TemplateResponse("backup.html", {"request": request, "message": message})
 
@@ -3352,7 +3692,15 @@ def backup_export(
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
-    payload = {
+    payload = create_backup_payload(session)
+    response = JSONResponse(payload)
+    stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    response.headers["Content-Disposition"] = f"attachment; filename=fund-ledger-backup-{stamp}.json"
+    return response
+
+
+def create_backup_payload(session: Session) -> dict[str, Any]:
+    return {
         "exported_at": datetime.utcnow().isoformat() + "Z",
         "version": 1,
         "candidates": [
@@ -3387,8 +3735,12 @@ def backup_export(
             serialize_model(item)
             for item in session.exec(select(BenchmarkNav).order_by(BenchmarkNav.benchmark_code, BenchmarkNav.nav_date)).all()
         ],
+        "aliases": [
+            serialize_model(item)
+            for item in session.exec(select(FundAlias).order_by(FundAlias.id)).all()
+        ],
+        "audits": [
+            serialize_model(item)
+            for item in session.exec(select(OperationAudit).order_by(OperationAudit.id)).all()
+        ],
     }
-    response = JSONResponse(payload)
-    stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    response.headers["Content-Disposition"] = f"attachment; filename=fund-ledger-backup-{stamp}.json"
-    return response

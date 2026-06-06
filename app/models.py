@@ -157,3 +157,21 @@ class BackgroundJob(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+
+
+class FundAlias(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    pattern: str = Field(index=True)
+    replacement: str = ""
+    notes: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class OperationAudit(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    action: str = Field(index=True)
+    target_type: str = Field(index=True)
+    target_id: str = ""
+    detail: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)

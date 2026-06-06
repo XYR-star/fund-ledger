@@ -1,5 +1,6 @@
-from datetime import date
+from datetime import date, datetime
 import asyncio
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -639,6 +640,93 @@ async def test_backup_export(client):
     assert "fund_rules" in data
     assert "fund_fee_tiers" in data
     assert data["benchmark_nav"][0]["benchmark_code"] == "000300"
+
+
+async def test_aliases_repair_analytics_backup_and_audit_pages(client, tmp_path, monkeypatch):
+    await login(client)
+    import app.db
+    import app.main
+    from app.app_settings import runtime_settings, save_settings
+    from app.models import CandidateStatus, FundAlias, FundNav, FundRule, FundTransactionCandidate, OperationAudit, TransactionAction
+
+    with Session(app.db.engine) as session:
+        session.add(FundRule(fund_code="006327", fund_name="易方达中证海外互联网50ETF联接(QDII)A", fund_type="QDII", buy_confirm_days=2, sell_confirm_days=2))
+        session.add(FundNav(fund_code="006327", nav_date=date(2025, 7, 18), unit_nav=1.1022))
+        session.add(FundNav(fund_code="006327", nav_date=date(2025, 7, 21), unit_nav=1.1143))
+        session.add(FundNav(fund_code="006327", nav_date=date(2025, 7, 22), unit_nav=1.13))
+        session.add(
+            FundTransactionCandidate(
+                status=CandidateStatus.pending,
+                fund_code="006327",
+                fund_name="易方达中证海外互联网5OETF联接(QDI)A",
+                trade_date=date(2025, 7, 18),
+                action=TransactionAction.buy,
+                amount_cny=50,
+            )
+        )
+        save_settings(
+            session,
+            {
+                "AUTO_BACKUP_ENABLED": "true",
+                "AUTO_BACKUP_TIME": "02:10",
+                "AUTO_BACKUP_TIMEZONE": "Asia/Shanghai",
+                "AUTO_BACKUP_KEEP": "2",
+                "AUTO_BACKUP_LAST_RUN_DATE": "",
+            },
+        )
+
+    aliases = await client.get("/aliases")
+    assert "5OETF" in aliases.text
+    response = await client.post(
+        "/aliases",
+        data={"pattern": "中国互联网", "replacement": "互联网", "notes": "测试"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with Session(app.db.engine) as session:
+        assert session.exec(select(FundAlias)).first().pattern == "中国互联网"
+
+    repair = await client.get("/repair")
+    assert "候选可回填" in repair.text
+    response = await client.post("/repair/run", follow_redirects=False)
+    assert response.status_code == 303
+    with Session(app.db.engine) as session:
+        candidate = session.exec(select(FundTransactionCandidate)).first()
+        assert candidate.nav == 1.1022
+        assert candidate.share == 45.36
+        assert session.exec(select(OperationAudit).where(OperationAudit.action == "repair.run")).first()
+
+    await client.post("/candidates/1/confirm", follow_redirects=False)
+    analytics = await client.get("/analytics")
+    assert "收益分析" in analytics.text
+    assert "累计投入" in analytics.text
+
+    backup = await client.get("/backup")
+    assert "服务器备份" in backup.text
+    response = await client.post("/backup/create", follow_redirects=False)
+    assert response.status_code == 303
+    with Session(app.db.engine) as session:
+        assert session.exec(select(OperationAudit).where(OperationAudit.action == "backup.manual_file")).first()
+
+    now = datetime(2026, 6, 5, 2, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+    job_calls = []
+
+    class Job:
+        id = 123
+
+    def fake_create_and_enqueue(session, job_type, payload):
+        job_calls.append((job_type, payload))
+        return Job()
+
+    monkeypatch.setattr(app.main, "create_and_enqueue", fake_create_and_enqueue)
+    job = app.main.maybe_enqueue_auto_backup(now)
+    assert job.id == 123
+    assert job_calls[0][0] == "auto_backup"
+    with Session(app.db.engine) as session:
+        assert runtime_settings(session)["AUTO_BACKUP_LAST_RUN_DATE"] == "2026-06-05"
+
+    audit = await client.get("/audit")
+    assert "操作审计" in audit.text
 
 
 async def test_health_page_reports_data_quality_issues(client):

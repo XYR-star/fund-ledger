@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}自动修复 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>自动修复</h1>
+    <p class="muted">只修复可由现有规则和净值确定的字段。</p>
+  </div>
+</div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+<section class="panel stack">
+  <div class="metrics">
+    <div class="metric"><span>候选可回填</span><strong>{{ preview.candidate_backfillable }}</strong></div>
+    <div class="metric"><span>流水可回填</span><strong>{{ preview.transaction_backfillable }}</strong></div>
+    <div class="metric"><span>货币基金记录</span><strong>{{ preview.money_records }}</strong></div>
+  </div>
+  <form method="post" action="/repair/run">
+    <button class="btn primary" type="submit">自动修复可修复项</button>
+  </form>
+</section>
+{% endblock %}

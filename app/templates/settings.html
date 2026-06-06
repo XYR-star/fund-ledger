@@ -130,6 +130,31 @@
     <p class="muted">自动任务会同步当前未清仓持仓基金的净值，并刷新收益曲线使用的沪深300基准。</p>
   </section>
 
+  <section class="panel stack">
+    <h2>自动备份</h2>
+    <div class="form-grid">
+      <label>启用
+        <select name="auto_backup_enabled">
+          <option value="on" {% if config.AUTO_BACKUP_ENABLED == "true" %}selected{% endif %}>启动</option>
+          <option value="off" {% if config.AUTO_BACKUP_ENABLED != "true" %}selected{% endif %}>停止</option>
+        </select>
+      </label>
+      <label>每日时间
+        <input type="time" name="auto_backup_time" value="{{ config.AUTO_BACKUP_TIME }}">
+      </label>
+      <label>时区
+        <input name="auto_backup_timezone" value="{{ config.AUTO_BACKUP_TIMEZONE }}">
+      </label>
+      <label>保留份数
+        <input type="number" min="1" step="1" name="auto_backup_keep" value="{{ config.AUTO_BACKUP_KEEP }}">
+      </label>
+      <label>上次自动运行
+        <input value="{{ config.AUTO_BACKUP_LAST_RUN_DATE or '暂无' }}" disabled>
+      </label>
+    </div>
+    <p class="muted">自动备份会写入 /www/data/fund-ledger/backups，并按保留份数清理旧文件。</p>
+  </section>
+
   <div class="actions">
     <button class="btn primary" type="submit">保存设置</button>
   </div>

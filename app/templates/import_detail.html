@@ -69,10 +69,15 @@
     <div class="metric"><span>已忽略</span><strong>{{ audit.ignored }}</strong></div>
     <div class="metric"><span>未匹配</span><strong>{{ audit.unmatched }}</strong></div>
     <div class="metric"><span>可自动确认</span><strong>{{ audit.auto_confirmable }}</strong></div>
+    <div class="metric"><span>低置信度</span><strong>{{ audit.low_confidence }}</strong></div>
     <div class="metric"><span>正式流水</span><strong>{{ audit.transactions }}</strong></div>
+    <div class="metric"><span>确认率</span><strong>{{ audit.success_rate }}%</strong></div>
   </div>
   {% if audit.duplicate_candidates %}
   <p class="muted">发现 {{ audit.duplicate_candidates }} 组同文件疑似重复候选，确认时会自动跳过重复入账。</p>
+  {% endif %}
+  {% if audit.unmatched or audit.low_confidence %}
+  <p class="muted">批次建议：先处理未匹配基金和低置信度候选，再执行自动确认。</p>
   {% endif %}
 </section>
 

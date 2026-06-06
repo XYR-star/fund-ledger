@@ -36,6 +36,11 @@ DEFAULTS = {
     "AUTO_MARKET_SYNC_TIME": "21:30",
     "AUTO_MARKET_SYNC_TIMEZONE": "Asia/Shanghai",
     "AUTO_MARKET_SYNC_LAST_RUN_DATE": "",
+    "AUTO_BACKUP_ENABLED": "true",
+    "AUTO_BACKUP_TIME": "02:10",
+    "AUTO_BACKUP_TIMEZONE": "Asia/Shanghai",
+    "AUTO_BACKUP_KEEP": "30",
+    "AUTO_BACKUP_LAST_RUN_DATE": "",
 }
 
 

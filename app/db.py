@@ -77,6 +77,40 @@ def migrate_schema() -> None:
             )
             connection.execute(text("CREATE INDEX ix_benchmarknav_benchmark_code ON benchmarknav (benchmark_code)"))
             connection.execute(text("CREATE INDEX ix_benchmarknav_nav_date ON benchmarknav (nav_date)"))
+        if "fundalias" not in tables:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE fundalias (
+                        id INTEGER PRIMARY KEY,
+                        pattern VARCHAR NOT NULL,
+                        replacement VARCHAR NOT NULL DEFAULT '',
+                        notes VARCHAR NOT NULL DEFAULT '',
+                        created_at TIMESTAMP NOT NULL,
+                        updated_at TIMESTAMP NOT NULL
+                    )
+                    """
+                )
+            )
+            connection.execute(text("CREATE INDEX ix_fundalias_pattern ON fundalias (pattern)"))
+        if "operationaudit" not in tables:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE operationaudit (
+                        id INTEGER PRIMARY KEY,
+                        action VARCHAR NOT NULL,
+                        target_type VARCHAR NOT NULL,
+                        target_id VARCHAR NOT NULL DEFAULT '',
+                        detail VARCHAR NOT NULL DEFAULT '',
+                        created_at TIMESTAMP NOT NULL
+                    )
+                    """
+                )
+            )
+            connection.execute(text("CREATE INDEX ix_operationaudit_action ON operationaudit (action)"))
+            connection.execute(text("CREATE INDEX ix_operationaudit_target_type ON operationaudit (target_type)"))
+            connection.execute(text("CREATE INDEX ix_operationaudit_created_at ON operationaudit (created_at)"))
 
 
 def get_session() -> Generator[Session, None, None]:
