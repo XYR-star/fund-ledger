@@ -2492,16 +2492,17 @@ def imports_retry_failed(
         .order_by(ImportDocument.created_at)
     ).all()
     job_ids = []
-    cleared = 0
+    cleared = {"transactions": 0, "candidates": 0}
     for document in documents:
         job, cleared_count = retry_import_document(session, document)
         job_ids.append(str(job.id))
-        cleared += cleared_count
+        cleared["transactions"] += cleared_count["transactions"]
+        cleared["candidates"] += cleared_count["candidates"]
     if not documents:
         return redirect("/imports?message=没有失败导入需要重跑")
     message = f"已重跑 {len(documents)} 个失败导入，后台任务 #{', #'.join(job_ids)}"
-    if cleared:
-        message += f"，已清理 {cleared} 条未确认候选"
+    if cleared["transactions"] or cleared["candidates"]:
+        message += f"，已失效旧流水 {cleared['transactions']} 条、旧候选 {cleared['candidates']} 条"
     return redirect(f"/imports?message={message}")
 
 
@@ -2602,13 +2603,18 @@ def import_run_ocr(
         raise HTTPException(status_code=404)
     if not document.source_file:
         return redirect(f"/imports/{document_id}?message=没有可 OCR 的文件")
+    invalidated = invalidate_import_results(session, document)
     document.status = ImportStatus.ocr_running
+    document.ocr_text = ""
     document.error_message = ""
     document.updated_at = datetime.utcnow()
     session.add(document)
     session.commit()
     job = create_and_enqueue(session, "ocr_import", {"document_id": document_id})
-    return redirect(f"/imports/{document_id}?message=OCR 已加入后台任务 #{job.id}")
+    return redirect(
+        f"/imports/{document_id}?message=OCR 已加入后台任务 #{job.id}，"
+        f"已失效旧流水 {invalidated['transactions']} 条、旧候选 {invalidated['candidates']} 条"
+    )
 
 
 @app.post("/imports/{document_id}/text")
@@ -2643,11 +2649,15 @@ def import_parse(
     text = document.ocr_text or document.raw_text
     if not text.strip():
         return redirect(f"/imports/{document_id}?message=没有可解析文本")
+    invalidated = invalidate_import_results(session, document)
     document.error_message = ""
     session.add(document)
     session.commit()
     job = create_and_enqueue(session, "parse_import", {"document_id": document_id, "use_llm": use_llm})
-    return redirect(f"/imports/{document_id}?message=解析已加入后台任务 #{job.id}")
+    return redirect(
+        f"/imports/{document_id}?message=解析已加入后台任务 #{job.id}，"
+        f"已失效旧流水 {invalidated['transactions']} 条、旧候选 {invalidated['candidates']} 条"
+    )
 
 
 @app.post("/imports/{document_id}/retry")
@@ -2661,14 +2671,16 @@ def import_retry(
         raise HTTPException(status_code=404)
     job, cleared = retry_import_document(session, document)
     message = f"自动导入已重新加入后台任务 #{job.id}"
-    if cleared:
-        message += f"，已清理 {cleared} 条未确认候选"
+    if cleared["transactions"] or cleared["candidates"]:
+        message += f"，已失效旧流水 {cleared['transactions']} 条、旧候选 {cleared['candidates']} 条"
     return redirect(f"/imports/{document_id}?message={message}")
 
 
-def retry_import_document(session: Session, document: ImportDocument) -> tuple[BackgroundJob, int]:
-    cleared = clear_unconfirmed_candidates_for_document(session, document)
+def retry_import_document(session: Session, document: ImportDocument) -> tuple[BackgroundJob, dict[str, int]]:
+    cleared = invalidate_import_results(session, document)
     document.error_message = ""
+    if document.source_file:
+        document.ocr_text = ""
     document.status = ImportStatus.uploaded if document.source_file else ImportStatus.ocr_done
     document.updated_at = datetime.utcnow()
     session.add(document)
@@ -2763,19 +2775,35 @@ def summarize_imports(
     }
 
 
-def clear_unconfirmed_candidates_for_document(session: Session, document: ImportDocument) -> int:
-    if not document.source_hash:
-        return 0
-    candidates = session.exec(
-        select(FundTransactionCandidate).where(
-            FundTransactionCandidate.source_hash == document.source_hash,
-            FundTransactionCandidate.status != CandidateStatus.confirmed,
-        )
-    ).all()
+def invalidate_import_results(session: Session, document: ImportDocument) -> dict[str, int]:
+    candidates = []
+    if document.source_hash:
+        candidates = session.exec(
+            select(FundTransactionCandidate).where(FundTransactionCandidate.source_hash == document.source_hash)
+        ).all()
+    candidate_ids = [candidate.id for candidate in candidates if candidate.id]
+    transactions = []
+    if document.source_file:
+        transactions = session.exec(
+            select(FundTransaction).where(FundTransaction.source_file == document.source_file)
+        ).all()
+    if candidate_ids:
+        linked_transactions = session.exec(
+            select(FundTransaction).where(FundTransaction.candidate_id.in_(candidate_ids))
+        ).all()
+        existing_tx_ids = {transaction.id for transaction in transactions}
+        transactions.extend(transaction for transaction in linked_transactions if transaction.id not in existing_tx_ids)
+        linked_candidates = session.exec(
+            select(FundTransactionCandidate).where(FundTransactionCandidate.id.in_(candidate_ids))
+        ).all()
+        existing_ids = {candidate.id for candidate in candidates}
+        candidates.extend(candidate for candidate in linked_candidates if candidate.id not in existing_ids)
+    for transaction in transactions:
+        session.delete(transaction)
     for candidate in candidates:
         session.delete(candidate)
     session.commit()
-    return len(candidates)
+    return {"transactions": len(transactions), "candidates": len(candidates)}
 
 
 def count_duplicate_candidate_groups(candidates: list[FundTransactionCandidate]) -> int:

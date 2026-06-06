@@ -1,5 +1,6 @@
 from datetime import date, datetime
 import asyncio
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -988,7 +989,14 @@ async def test_batch_upload_auto_imports_multiple_files(client, monkeypatch):
 
 async def test_import_detail_shows_audit_and_retry_reparses(client):
     import app.db
-    from app.models import CandidateStatus, FundTransactionCandidate, ImportDocument, ImportStatus, TransactionAction
+    from app.models import (
+        CandidateStatus,
+        FundTransaction,
+        FundTransactionCandidate,
+        ImportDocument,
+        ImportStatus,
+        TransactionAction,
+    )
 
     await login(client)
     with Session(app.db.engine) as session:
@@ -1004,7 +1012,7 @@ async def test_import_detail_shows_audit_and_retry_reparses(client):
         session.refresh(document)
         session.add(
             FundTransactionCandidate(
-                status=CandidateStatus.pending,
+                status=CandidateStatus.confirmed,
                 fund_code="000000",
                 fund_name="旧候选",
                 trade_date=date(2024, 1, 1),
@@ -1014,21 +1022,37 @@ async def test_import_detail_shows_audit_and_retry_reparses(client):
             )
         )
         session.commit()
+        old_candidate = session.exec(select(FundTransactionCandidate)).first()
+        session.add(
+            FundTransaction(
+                candidate_id=old_candidate.id,
+                fund_code="000000",
+                fund_name="旧候选",
+                trade_date=date(2024, 1, 1),
+                action=TransactionAction.buy,
+                amount_cny=1,
+                source_file=document.source_file,
+                raw_text="old bad result",
+            )
+        )
+        session.commit()
         document_id = document.id
 
     detail = await client.get(f"/imports/{document_id}")
     assert "导入审计" in detail.text
-    assert "待确认" in detail.text
-    assert "未匹配" in detail.text
+    assert "正式流水" in detail.text
 
     response = await client.post(f"/imports/{document_id}/retry", follow_redirects=False)
     assert response.status_code == 303
+    assert "已失效旧流水" in unquote(response.headers["location"])
     await wait_for_text(client, "/candidates", "161725")
 
     with Session(app.db.engine) as session:
         candidates = session.exec(select(FundTransactionCandidate)).all()
+        transactions = session.exec(select(FundTransaction)).all()
     assert len(candidates) == 1
     assert candidates[0].fund_code == "161725"
+    assert transactions == []
 
 
 async def test_imports_page_shows_audit_and_bulk_retries_failed(client):
