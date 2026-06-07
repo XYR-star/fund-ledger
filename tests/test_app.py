@@ -288,6 +288,16 @@ async def test_auto_confirm_safe_only_confirms_high_quality_candidates(client):
                     "trade_date": "2024-01-02",
                     "action": "buy",
                     "amount_cny": 100,
+                    "share": 50,
+                    "nav": 2,
+                    "confirm_date": "2024-01-03",
+                },
+                {
+                    "fund_code": "161725",
+                    "fund_name": "招商中证白酒",
+                    "trade_date": "2024-01-03",
+                    "action": "buy",
+                    "amount_cny": 100,
                 },
                 {
                     "fund_code": "000000",
@@ -309,7 +319,7 @@ async def test_auto_confirm_safe_only_confirms_high_quality_candidates(client):
     assert "未知基金" not in auto_page.text
     review_page = await client.get("/candidates?source_hash=quality-source&quality=review")
     assert "未知基金" in review_page.text
-    assert "161725" not in review_page.text
+    assert "161725" in review_page.text
     imports_page = await client.get("/imports")
     assert "quality=auto" in imports_page.text
 
@@ -328,6 +338,7 @@ async def test_auto_confirm_safe_only_confirms_high_quality_candidates(client):
     assert transactions[0].fund_code == "161725"
     assert candidates[0].status == CandidateStatus.confirmed
     assert candidates[1].status == CandidateStatus.pending
+    assert candidates[2].status == CandidateStatus.pending
 
 
 async def test_ignore_candidate_does_not_create_transaction(client):
@@ -1416,9 +1427,10 @@ async def test_llm_rows_apply_submitted_time_cutoff(client):
         candidate = session.exec(select(FundTransactionCandidate)).first()
 
     assert candidate.submitted_at.strftime("%H:%M") == "15:30"
-    assert candidate.trade_date == date(2024, 1, 3)
-    assert candidate.confirm_date == date(2024, 1, 4)
-    assert candidate.nav == 2.0
+    assert candidate.trade_date == date(2024, 1, 2)
+    assert candidate.confirm_date is None
+    assert candidate.nav is None
+    assert candidate.share is None
 
 
 async def test_money_fund_uses_cash_equivalent_values(client):
@@ -1561,8 +1573,8 @@ async def test_candidate_update_preserves_existing_effective_trade_date(client):
         session.commit()
         candidate = session.exec(select(FundTransactionCandidate)).first()
         candidate_id = candidate.id
-        assert candidate.trade_date == date(2024, 1, 3)
-        assert candidate.confirm_date == date(2024, 1, 4)
+        assert candidate.trade_date == date(2024, 1, 2)
+        assert candidate.confirm_date is None
 
     response = await client.post(
         f"/candidates/{candidate_id}/update",
@@ -1821,7 +1833,7 @@ async def test_dividend_and_reinvest_calculation(client):
         )
         session.commit()
         candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
-        assert (candidates[0].amount_cny, candidates[0].share, candidates[0].fee) == (20, 10, 0.0)
+        assert (candidates[0].amount_cny, candidates[0].share, candidates[0].fee) == (20, None, None)
         assert (candidates[1].amount_cny, candidates[1].share, candidates[1].fee) == (5, None, 0.0)
         session.add(
             FundTransaction(
@@ -2274,3 +2286,41 @@ async def test_table_ocr_parser_extracts_status_before_llm(client):
         assert "本地名称匹配 长城短债D → 019872" in warnings
         assert [candidate.status for candidate in candidates] == [CandidateStatus.ignored, CandidateStatus.pending]
         assert "已撤销" in candidates[0].raw_text
+
+
+async def test_table_ocr_parser_ignores_bank_tail_number_for_amount(client):
+    import app.db
+    from app.main import create_candidates_from_text
+    from app.models import FundRule, FundTransactionCandidate
+
+    await login(client)
+    ocr_text = "\n".join(
+        [
+            "名称",
+            "创建时间",
+            "交易类型",
+            "交易渠道",
+            "金额",
+            "交易账户",
+            "状态",
+            "易方达恒生港股通高股息低波动ETF联接发起式A",
+            "2026-04-10 14:51:48",
+            "申购",
+            "易方达财富-e钱包APP(IOS)",
+            "20.00",
+            "中国银行[尾号9854]",
+            "成功",
+            "明细",
+        ]
+    )
+    with Session(app.db.engine) as session:
+        session.add(FundRule(fund_code="021457", fund_name="易方达恒生港股通高股息低波动ETF联接发起式A"))
+        session.commit()
+        created, warnings = create_candidates_from_text(session, ocr_text, source_hash="bank-tail-hash")
+        session.commit()
+        candidate = session.exec(select(FundTransactionCandidate)).one()
+        assert created == 1
+        assert "本地名称匹配 易方达恒生港股通高股息低波动ETF联接发起式A → 021457" in warnings
+        assert candidate.amount_cny == 20.0
+        assert candidate.share is None
+        assert candidate.nav is None

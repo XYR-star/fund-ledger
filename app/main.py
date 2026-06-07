@@ -383,6 +383,8 @@ DEFAULT_FUND_ALIASES = {
     "QDI)": "QDII)",
     "（QDI）": "（QDII）",
     "(QDI)": "(QDII)",
+    "A(人民": "A(人民币份额)",
+    "A（人民": "A（人民币份额）",
 }
 
 
@@ -736,7 +738,7 @@ def _looks_like_fund_name_cell(value: str) -> bool:
 def table_chunk_to_row(chunk: list[str]) -> dict[str, Any] | None:
     joined = " ".join(chunk)
     trade_day, submitted_at = extract_trade_datetime(joined)
-    amount = extract_amount(joined)
+    amount = extract_table_trade_value(chunk)
     if not trade_day or amount is None:
         return None
     fund_name = chunk[0].strip()
@@ -760,6 +762,22 @@ def source_status_from_chunk(text: str) -> str:
     if any(word in text for word in ("成功", "已确认", "确认成功")):
         return "成功"
     return ""
+
+
+def extract_table_trade_value(chunk: list[str]) -> float | None:
+    action_index = None
+    for index, item in enumerate(chunk):
+        if any(word in item for word in ("申购", "赎回", "买入", "卖出", "强制调增", "强制调减", "分红")):
+            action_index = index
+            break
+    scan = chunk[action_index + 1 :] if action_index is not None else chunk
+    for item in scan:
+        if any(word in item for word in ("成功", "失败", "撤销", "取消", "明细", "尾号", "银行", "账户")):
+            continue
+        value = parse_float_value(item)
+        if value is not None:
+            return value
+    return None
 
 
 def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
@@ -1182,21 +1200,34 @@ def create_candidates_from_rows(
         submitted_at = parse_optional_time_value(
             row.get("submitted_at") or row.get("submitted_time") or row.get("trade_time")
         )
-        rule = get_fund_rule(session, fund_code)
         money = is_money_fund(session, fund_code)
-        effective_nav_item = None if money else find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
-        effective_nav_value = effective_nav_item.unit_nav if effective_nav_item else None
-        nav = 1.0 if money else (parse_float_value(row.get("nav")) or effective_nav_value)
-        amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
-            session,
-            fund_code,
-            action,
-            parse_float_value(row.get("amount_cny")),
-            parse_float_value(row.get("share")),
-            nav,
-            trade_date,
-            submitted_at=submitted_at,
-        )
+        parsed_amount = parse_float_value(row.get("amount_cny"))
+        parsed_share = parse_float_value(row.get("share"))
+        parsed_nav = parse_float_value(row.get("nav"))
+        parsed_fee = parse_float_value(row.get("fee"))
+        parsed_confirm_date = parse_date_value(row.get("confirm_date"))
+        if money:
+            nav = 1.0
+            amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
+                session,
+                fund_code,
+                action,
+                parsed_amount,
+                parsed_share,
+                nav,
+                trade_date,
+                submitted_at=submitted_at,
+            )
+        else:
+            nav = parsed_nav
+            amount_cny = parsed_amount
+            share = parsed_share
+            fee = parsed_fee
+            confirm_date = parsed_confirm_date
+            effective_trade_date = trade_date
+            if action == TransactionAction.dividend:
+                share = None
+                fee = 0.0 if fee is None else fee
         source_status = source_status_for_row(row, source_text or "")
         row_raw = {**row, "source_status": source_status} if source_status else row
         candidate = FundTransactionCandidate(
@@ -1205,7 +1236,7 @@ def create_candidates_from_rows(
             fund_name=str(row.get("fund_name") or ""),
             trade_date=effective_trade_date,
             submitted_at=submitted_at,
-            confirm_date=parse_date_value(row.get("confirm_date")) or confirm_date,
+            confirm_date=confirm_date,
             action=action,
             amount_cny=amount_cny,
             share=share,
@@ -3144,7 +3175,6 @@ def candidates_auto_confirm_safe(
     confirmed = 0
     skipped = 0
     for candidate in candidates:
-        backfill_candidate_values(session, candidate)
         quality = candidate_quality(session, candidate)
         if not quality["auto_confirmable"]:
             skipped += 1
