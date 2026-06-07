@@ -283,6 +283,9 @@ def create_candidates_from_text(
         if is_etf_fund(session, fund_code):
             warnings.append(f"跳过 ETF 基金 {fund_code} {item.fund_name}")
             continue
+        if is_money_fund(session, fund_code):
+            warnings.append(f"跳过 货币基金 {fund_code} {item.fund_name}")
+            continue
         amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
             session,
             fund_code,
@@ -383,6 +386,11 @@ DEFAULT_FUND_ALIASES = {
     "QDI)": "QDII)",
     "（QDI）": "（QDII）",
     "(QDI)": "(QDII)",
+    "QDI川": "QDII",
+    "QDI训": "QDII",
+    "(QD)": "(QDII)",
+    "（QD）": "（QDII）",
+    "币份额)": "",
     "A(人民": "A(人民币份额)",
     "A（人民": "A（人民币份额）",
 }
@@ -445,6 +453,10 @@ def create_inferred_candidates_from_minimal_text(
         if is_etf_fund(session, fund_code):
             rule = get_fund_rule(session, fund_code)
             warnings.append(f"跳过 ETF 基金 {fund_code} {rule.fund_name or fund_name}")
+            continue
+        if is_money_fund(session, fund_code):
+            rule = get_fund_rule(session, fund_code)
+            warnings.append(f"跳过 货币基金 {fund_code} {rule.fund_name or fund_name}")
             continue
         money = is_money_fund(session, fund_code)
         amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
@@ -726,6 +738,13 @@ def extract_table_rows_from_ocr(source_text: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _chunk_has_bank_keyword(chunk: list[str]) -> bool:
+    return any(
+        any(word in item for word in ("尾号", "银行", "账户"))
+        for item in chunk
+    )
+
+
 def _looks_like_fund_name_cell(value: str) -> bool:
     text = value.strip()
     if len(text) < 4 or not any("\u4e00" <= ch <= "\u9fff" for ch in text):
@@ -740,6 +759,8 @@ def table_chunk_to_row(chunk: list[str]) -> dict[str, Any] | None:
     trade_day, submitted_at = extract_trade_datetime(joined)
     amount = extract_table_trade_value(chunk)
     if not trade_day or amount is None:
+        return None
+    if _chunk_has_bank_keyword(chunk) and amount == int(amount) and 1000 <= amount <= 9999:
         return None
     fund_name = chunk[0].strip()
     fund_code = extract_fund_code(joined) or "000000"
@@ -764,20 +785,9 @@ def source_status_from_chunk(text: str) -> str:
     return ""
 
 
-def extract_table_trade_value(chunk: list[str]) -> float | None:
-    action_index = None
-    for index, item in enumerate(chunk):
-        if any(word in item for word in ("申购", "赎回", "买入", "卖出", "强制调增", "强制调减", "分红")):
-            action_index = index
-            break
-    scan = chunk[action_index + 1 :] if action_index is not None else chunk
-    for item in scan:
-        if any(word in item for word in ("成功", "失败", "撤销", "取消", "明细", "尾号", "银行", "账户")):
-            continue
-        value = parse_float_value(item)
-        if value is not None:
-            return value
-    return None
+def infer_candidate_status_for_row(row: dict[str, Any], source_text: str | None = None) -> CandidateStatus:
+    source_status = source_status_for_row(row, source_text or "")
+    return infer_candidate_status(f"{row} {source_status}")
 
 
 def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
@@ -813,6 +823,48 @@ def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
         if status:
             return status
     return ""
+
+
+def extract_table_trade_value(chunk: list[str]) -> float | None:
+    action_index = None
+    for index, item in enumerate(chunk):
+        if any(word in item for word in ("申购", "赎回", "买入", "卖出", "强制调增", "强制调减", "分红")):
+            action_index = index
+            break
+    scan = chunk[action_index + 1 :] if action_index is not None else chunk
+    has_bank = any(
+        any(word in item for word in ("尾号", "银行", "账户"))
+        for item in scan
+    )
+    for item in scan:
+        if any(word in item for word in ("成功", "失败", "撤销", "取消", "明细")):
+            continue
+        if any(word in item for word in ("尾号", "银行", "账户")):
+            continue
+        stripped = item
+        for prefix in ("红利再投", "现金分红"):
+            if prefix in item:
+                stripped = item.replace(prefix, "").strip()
+                break
+        value = parse_float_value(stripped)
+        if value is not None:
+            return value
+    return None
+    cutoff = parse_time_value((rule.cutoff_time if rule else "15:00") or "15:00")
+    target = trade_day + timedelta(days=1) if submitted_at and submitted_at >= cutoff else trade_day
+    nav_item = session.exec(
+        select(FundNav)
+        .where(FundNav.fund_code == fund_code, FundNav.nav_date >= target)
+        .order_by(FundNav.nav_date)
+    ).first()
+    if nav_item:
+        return nav_item
+    sync_nav_for_fund(session, fund_code)
+    return session.exec(
+        select(FundNav)
+        .where(FundNav.fund_code == fund_code, FundNav.nav_date >= target)
+        .order_by(FundNav.nav_date)
+    ).first()
 
 
 def find_effective_nav(
@@ -1193,6 +1245,9 @@ def create_candidates_from_rows(
                 fund_code = resolved
         if is_etf_fund(session, fund_code):
             continue
+        if is_money_fund(session, fund_code):
+            warnings.append(f"跳过 货币基金 {fund_name}")
+            continue
         try:
             action = TransactionAction(str(row.get("action") or TransactionAction.buy.value))
         except ValueError:
@@ -1204,30 +1259,24 @@ def create_candidates_from_rows(
         parsed_amount = parse_float_value(row.get("amount_cny"))
         parsed_share = parse_float_value(row.get("share"))
         parsed_nav = parse_float_value(row.get("nav"))
-        parsed_fee = parse_float_value(row.get("fee"))
-        parsed_confirm_date = parse_date_value(row.get("confirm_date"))
-        if money:
-            nav = 1.0
-            amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
-                session,
-                fund_code,
-                action,
-                parsed_amount,
-                parsed_share,
-                nav,
-                trade_date,
-                submitted_at=submitted_at,
-            )
-        else:
+        nav = 1.0 if money else (parsed_nav or None)
+        amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
+            session,
+            fund_code,
+            action,
+            parsed_amount,
+            parsed_share,
+            nav,
+            trade_date,
+            submitted_at=submitted_at,
+        )
+        if not money and nav is None and fund_code != "000000":
+            rule = get_fund_rule(session, fund_code)
+            nav_item = find_effective_nav(session, fund_code, trade_date, submitted_at, rule)
+            if nav_item:
+                nav = nav_item.unit_nav
+        if parsed_nav and not nav:
             nav = parsed_nav
-            amount_cny = parsed_amount
-            share = parsed_share
-            fee = parsed_fee
-            confirm_date = parsed_confirm_date
-            effective_trade_date = trade_date
-            if action == TransactionAction.dividend:
-                share = None
-                fee = 0.0 if fee is None else fee
         source_status = source_status_for_row(row, source_text or "")
         row_raw = {**row, "source_status": source_status} if source_status else row
         candidate = FundTransactionCandidate(
@@ -2674,7 +2723,9 @@ def import_detail_page(
     config = runtime_settings(session)
     jobs = session.exec(
         select(BackgroundJob)
-        .where(BackgroundJob.payload_json.contains(f'"document_id": {document_id}'))
+        .where(
+            text(f'json_extract(backgroundjob.payload_json, "$.document_id") = {document_id}')
+        )
         .order_by(desc(BackgroundJob.created_at))
         .limit(5)
     ).all()
@@ -3554,6 +3605,45 @@ def _apply_unmatched_code_fix(
         {"code": code, "name": fund_name},
     )
     session.commit()
+
+
+@app.post("/candidates/{candidate_id}/unconfirm")
+def candidate_unconfirm(
+    candidate_id: int,
+    return_to: str = Form("/candidates"),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    candidate = session.get(FundTransactionCandidate, candidate_id)
+    if not candidate or candidate.status != CandidateStatus.confirmed:
+        return candidates_redirect_with_message(return_to, "只能撤销已确认的候选")
+    tx = session.get(FundTransaction, candidate.confirmed_transaction_id)
+    if tx:
+        session.delete(tx)
+    candidate.status = CandidateStatus.pending
+    candidate.confirmed_transaction_id = None
+    candidate.updated_at = datetime.utcnow()
+    session.add(candidate)
+    session.commit()
+    return candidates_redirect_with_message(return_to, "已撤销确认")
+
+
+@app.post("/candidates/{candidate_id}/unmatch")
+def candidate_unmatch(
+    candidate_id: int,
+    return_to: str = Form("/candidates"),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    candidate = session.get(FundTransactionCandidate, candidate_id)
+    if not candidate or candidate.status == CandidateStatus.confirmed:
+        return candidates_redirect_with_message(return_to, "已确认的候选不能标记未匹配，请先撤销确认")
+    candidate.fund_code = "000000"
+    candidate.confidence = 0.3
+    candidate.updated_at = datetime.utcnow()
+    session.add(candidate)
+    session.commit()
+    return candidates_redirect_with_message(return_to, "已标记为未匹配")
 
 
 @app.get("/transactions", response_class=HTMLResponse)

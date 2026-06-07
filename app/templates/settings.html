@@ -45,23 +45,14 @@
       </label>
       <label>后端
         <select name="ocr_backend">
-          <option value="rapidocr" {% if config.OCR_BACKEND == "rapidocr" %}selected{% endif %}>本地 RapidOCR</option>
-          <option value="api" {% if config.OCR_BACKEND == "api" %}selected{% endif %}>通用 OCR API</option>
+          <option value="rapidocr" {% if config.OCR_BACKEND == "rapidocr" %}selected{% endif %}>本地 RapidOCR（默认）</option>
           <option value="baidu" {% if config.OCR_BACKEND == "baidu" %}selected{% endif %}>百度 OCR API</option>
-          <option value="paddle" {% if config.OCR_BACKEND == "paddle" %}selected{% endif %}>PaddleOCR 可选</option>
+          <option value="api" {% if config.OCR_BACKEND == "api" %}selected{% endif %}>通用 OCR API</option>
+          <option value="paddle" {% if config.OCR_BACKEND == "paddle" %}selected{% endif %}>PaddleOCR</option>
         </select>
-      </label>
-      <label>API 类型
-        <select name="ocr_api_provider">
-          <option value="generic" {% if config.OCR_API_PROVIDER == "generic" %}selected{% endif %}>Generic multipart</option>
-          <option value="baidu" {% if config.OCR_API_PROVIDER == "baidu" %}selected{% endif %}>Baidu</option>
-        </select>
-      </label>
-      <label>当前后端
-        <input value="{{ config.OCR_BACKEND }}" disabled>
       </label>
       <label>状态
-        <input value="{{ '已启用' if config.OCR_ENABLED == 'true' else '已停止' }} · {{ 'API 已配置' if configured(config.OCR_API_KEY) or configured(config.BAIDU_OCR_API_KEY) else '本地或未配置 API' }}" disabled>
+        <input value="{{ '已启用' if config.OCR_ENABLED == 'true' else '已停止' }} · {{ config.OCR_BACKEND }}" disabled>
       </label>
     </div>
   </section>

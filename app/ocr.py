@@ -163,6 +163,17 @@ def _recognize_with_baidu(path: Path, config: dict[str, str]) -> OcrResult:
     response.raise_for_status()
     data = response.json()
     words = data.get("words_result") or []
+    if not words:
+        import time
+        for delay in (1, 2, 4):
+            time.sleep(delay)
+            r = requests.post(endpoint, params={"access_token": access_token},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={"image": base64.b64encode(path.read_bytes()).decode("ascii")}, timeout=90)
+            r.raise_for_status()
+            words = (r.json().get("words_result") or [])
+            if words:
+                break
     return OcrResult(text="\n".join(str(item.get("words", "")) for item in words), confidence=None)
 
 
