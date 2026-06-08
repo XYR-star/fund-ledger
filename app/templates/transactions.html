@@ -4,7 +4,7 @@
 <div class="page-title">
   <div>
     <h1>交易流水</h1>
-    <p class="muted">已确认的正式记录。</p>
+    <p class="muted">已确认的正式记录，含被忽略（撤销/失败）的候选参考。</p>
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
@@ -94,6 +94,7 @@
         </td>
         <td>
           {% if t.source_file == "manual" %}<span class="badge">手动</span>{% elif t.source_file %}<span class="badge">导入</span>{% else %}-{% endif %}
+          {% if t.candidate_id %}<a class="btn small" href="/candidates" style="margin-top:2px">候选</a>{% endif %}
           <input form="tx-update-{{ t.id }}" name="note" value="{{ t.raw_text if t.source_file == 'manual' else '' }}" placeholder="备注" style="min-width:110px">
         </td>
         <td>
@@ -112,4 +113,32 @@
     </tbody>
   </table>
 </div>
+
+{% if ignored_candidates %}
+<section class="panel stack" style="margin-top:16px">
+  <h2>被忽略 / 已撤销 ({ ignored_candidates|length })</h2>
+  <p class="muted">以下交易在导入时被标记为撤销/失败，仅供参考核对，不计入持仓。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>交易日</th><th>确认日</th><th>代码</th><th>名称</th><th>动作</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th><th>状态</th></tr></thead>
+      <tbody>
+        {% for c in ignored_candidates %}
+        <tr>
+          <td>{{ c.trade_date }}</td>
+          <td>{{ c.confirm_date or "-" }}</td>
+          <td>{{ c.fund_code }}</td>
+          <td>{{ c.fund_name }}</td>
+          <td>{{ c.action.value }}</td>
+          <td>{% if c.amount_cny is not none %}¥{{ "%.2f"|format(c.amount_cny) }}{% else %}-{% endif %}</td>
+          <td>{% if c.share is not none %}{{ "%.4f"|format(c.share) }}{% else %}-{% endif %}</td>
+          <td>{% if c.nav is not none %}{{ "%.4f"|format(c.nav) }}{% else %}-{% endif %}</td>
+          <td>{% if c.fee is not none %}¥{{ "%.2f"|format(c.fee) }}{% else %}-{% endif %}</td>
+          <td><span class="badge" style="background:var(--warn);color:#fff">{{ c.status.value }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 {% endblock %}

@@ -797,6 +797,7 @@ def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
     trade_date = parse_date_value(row.get("trade_date"))
     if not fund_name or not trade_date:
         return ""
+    submitted_at_str = str(row.get("submitted_at") or row.get("submitted_time") or row.get("trade_time") or "")
     amount = parse_float_value(row.get("amount_cny") or row.get("amount") or row.get("share"))
     date_text = trade_date.isoformat()
     compact_date = date_text.replace("-", "")
@@ -818,6 +819,9 @@ def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
         if date_text not in joined and compact_date not in compact_joined:
             continue
         if amount_tokens and not any(token in joined for token in amount_tokens):
+            continue
+        chunk_time = re.search(r"(\d{1,2}:\d{2})", joined)
+        if submitted_at_str and chunk_time and submitted_at_str.strip() != chunk_time.group(1):
             continue
         status = source_status_from_chunk(joined)
         if status:
@@ -3161,7 +3165,7 @@ def candidate_confirm(
         raise HTTPException(status_code=404)
     if candidate.status == CandidateStatus.confirmed:
         return redirect(safe_candidates_return(return_to))
-    confirm_candidate_transaction(session, candidate)
+    confirm_candidate_transaction(session, candidate, force=True)
     session.commit()
     return redirect(safe_candidates_return(return_to))
 
@@ -3201,14 +3205,20 @@ def candidates_confirm_all(
         query = query.where(FundTransactionCandidate.source_hash == source_hash)
     candidates = session.exec(query).all()
     confirmed = 0
+    skipped_ids: list[int] = []
     for candidate in candidates:
         if confirm_candidate_transaction(session, candidate):
             confirmed += 1
+        elif candidate.id:
+            skipped_ids.append(candidate.id)
     session.commit()
-    skipped = len(candidates) - confirmed
+    skipped = len(skipped_ids)
     msg = f"已确认 {confirmed} 条"
     if skipped:
-        msg += f"，跳过 {skipped} 条（重复）"
+        msg += f"，跳过 {skipped} 条疑似重复，请逐条手动确认"
+        if skipped <= 5:
+            msg += f"（候选 #{' #'.join(map(str, skipped_ids))}）"
+        msg += " — 手动点「确认入账」将强制生效"
     return candidates_redirect_with_message(return_to, msg)
 
 
@@ -3238,7 +3248,7 @@ def candidates_auto_confirm_safe(
     return candidates_redirect_with_message(return_to, f"已自动确认 {confirmed} 条高质量候选，保留 {skipped} 条待人工核对")
 
 
-def confirm_candidate_transaction(session: Session, candidate: FundTransactionCandidate) -> bool:
+def confirm_candidate_transaction(session: Session, candidate: FundTransactionCandidate, force: bool = False) -> bool:
     if candidate.status == CandidateStatus.confirmed:
         return False
     if infer_candidate_status(candidate.raw_text) == CandidateStatus.ignored:
@@ -3254,13 +3264,10 @@ def confirm_candidate_transaction(session: Session, candidate: FundTransactionCa
         candidate.updated_at = datetime.utcnow()
         session.add(candidate)
         return False
-    duplicate = find_duplicate_transaction(session, candidate)
-    if duplicate:
-        candidate.status = CandidateStatus.confirmed
-        candidate.confirmed_transaction_id = duplicate.id
-        candidate.updated_at = datetime.utcnow()
-        session.add(candidate)
-        return False
+    if not force:
+        duplicate = find_duplicate_transaction(session, candidate)
+        if duplicate:
+            return False
     fee = candidate.fee
     if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
         money = is_money_fund(session, candidate.fund_code)
@@ -3668,12 +3675,25 @@ def transactions_page(
     if date_to:
         query = query.where(FundTransaction.trade_date <= date_to)
     transactions = session.exec(query.order_by(desc(FundTransaction.trade_date), desc(FundTransaction.id))).all()
+    ignored_query = select(FundTransactionCandidate).where(
+        FundTransactionCandidate.status == CandidateStatus.ignored
+    )
+    if code:
+        ignored_query = ignored_query.where(FundTransactionCandidate.fund_code == code)
+    if action in {item.value for item in TransactionAction}:
+        ignored_query = ignored_query.where(FundTransactionCandidate.action == TransactionAction(action))
+    if date_from:
+        ignored_query = ignored_query.where(FundTransactionCandidate.trade_date >= date_from)
+    if date_to:
+        ignored_query = ignored_query.where(FundTransactionCandidate.trade_date <= date_to)
+    ignored_candidates = session.exec(ignored_query.order_by(desc(FundTransactionCandidate.trade_date), desc(FundTransactionCandidate.id))).all()
     return_to = transactions_url(code, action, date_from, date_to)
     return templates.TemplateResponse(
         "transactions.html",
         {
             "request": request,
             "transactions": transactions,
+            "ignored_candidates": ignored_candidates,
             "actions": list(TransactionAction),
             "message": message,
             "filters": {
@@ -3855,6 +3875,17 @@ def holding_detail_page(
         .where(FundTransaction.fund_code == fund_code)
         .order_by(FundTransaction.trade_date, FundTransaction.id)
     ).all()
+    ignored = session.exec(
+        select(FundTransactionCandidate)
+        .where(FundTransactionCandidate.fund_code == fund_code, FundTransactionCandidate.status == CandidateStatus.ignored)
+        .order_by(FundTransactionCandidate.trade_date, FundTransactionCandidate.id)
+    ).all()
+    tx_source_hashes: dict[int, str] = {}
+    for tx in transactions:
+        if tx.candidate_id:
+            c = session.get(FundTransactionCandidate, tx.candidate_id)
+            if c and c.source_hash:
+                tx_source_hashes[tx.id] = c.source_hash
     charts = build_performance_charts(session, include_closed=True, fund_code=fund_code)
     return templates.TemplateResponse(
         "holding_detail.html",
@@ -3862,6 +3893,8 @@ def holding_detail_page(
             "request": request,
             "position": position,
             "transactions": transactions,
+            "ignored_candidates": ignored,
+            "tx_source_hashes": tx_source_hashes,
             "chart": charts[0] if charts else None,
             "format_return": format_return,
         },

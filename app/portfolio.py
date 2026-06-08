@@ -87,7 +87,7 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
             net_proceeds = max(proceeds - fee, 0.0)
             item["total_sell_amount"] += net_proceeds
             item["realized_profit"] += net_proceeds - cost_reduction
-            item["share"] -= sell_share
+            item["share"] = max(item["share"] - sell_share, 0.0)
         elif tx.action == TransactionAction.dividend:
             item["realized_profit"] += amount or 0.0
         elif tx.action == TransactionAction.dividend_reinvest:

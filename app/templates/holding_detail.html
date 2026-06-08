@@ -97,11 +97,43 @@
           <td>{% if tx.share is not none %}{{ "%.4f"|format(tx.share) }}{% else %}-{% endif %}</td>
           <td>{% if tx.nav is not none %}{{ "%.4f"|format(tx.nav) }}{% else %}-{% endif %}</td>
           <td>{% if tx.fee is not none %}¥{{ "%.2f"|format(tx.fee) }}{% else %}-{% endif %}</td>
-          <td>{{ tx.source_file or "-" }}</td>
+          <td>
+            {% if tx.candidate_id and tx_source_hashes.get(tx.id) %}
+            <a class="btn small" href="/candidates?source_hash={{ tx_source_hashes[tx.id] }}">编辑候选</a>
+            {% else %}
+            {{ tx.source_file or "-" }}
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </section>
+
+{% if ignored_candidates %}
+<section class="panel stack" style="margin-top:16px">
+  <h2>被忽略 / 已撤销 ({{ ignored_candidates|length }})</h2>
+  <p class="muted">以下交易在导入时被标记为撤销/失败，仅供参考核对，不计入持仓。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>交易日</th><th>确认日</th><th>操作</th><th>金额</th><th>份额</th><th>净值</th><th>手续费</th><th>操作</th></tr></thead>
+      <tbody>
+        {% for c in ignored_candidates %}
+        <tr>
+          <td>{{ c.trade_date }}</td>
+          <td>{{ c.confirm_date or "-" }}</td>
+          <td><span class="badge" style="background:var(--warn);color:#fff">{{ c.action.value }}</span></td>
+          <td>{% if c.amount_cny is not none %}¥{{ "%.2f"|format(c.amount_cny) }}{% else %}-{% endif %}</td>
+          <td>{% if c.share is not none %}{{ "%.4f"|format(c.share) }}{% else %}-{% endif %}</td>
+          <td>{% if c.nav is not none %}{{ "%.4f"|format(c.nav) }}{% else %}-{% endif %}</td>
+          <td>{% if c.fee is not none %}¥{{ "%.2f"|format(c.fee) }}{% else %}-{% endif %}</td>
+          <td><a class="btn small" href="/candidates?source_hash={{ c.source_hash or '' }}">编辑</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 {% endblock %}

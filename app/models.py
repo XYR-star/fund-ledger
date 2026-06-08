@@ -105,7 +105,7 @@ class FundTransactionCandidate(SQLModel, table=True):
 
 class FundTransaction(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    candidate_id: Optional[int] = Field(default=None, index=True, unique=True)
+    candidate_id: Optional[int] = Field(default=None, index=True)
     fund_code: str = Field(index=True, max_length=6)
     fund_name: str = ""
     trade_date: date = Field(index=True)
