@@ -42,7 +42,7 @@ from .models import (
 )
 from .nav import sync_nav_for_fund
 from .ocr import recognize_file
-from .performance import build_performance_charts, format_return, sync_hs300
+from .performance import build_aggregate_charts, build_performance_charts, format_return, sync_hs300
 from .portfolio import calculate_holdings, calculate_position_summaries, money_fund_codes, xalpha_rows
 from .templates import templates
 
@@ -273,6 +273,10 @@ def create_candidates_from_text(
         fund_code = item.fund_code.zfill(6)
         item.fund_name = normalize_fund_name_with_aliases(session, item.fund_name)
         item.raw_text = apply_default_fund_aliases(item.raw_text)
+        if not item.fund_name or _looks_like_action(item.fund_name):
+            rule = session.get(FundRule, fund_code)
+            if rule and rule.fund_name:
+                item.fund_name = rule.fund_name
         if _is_etf_text(item.raw_text) or _is_etf_text(item.fund_name):
             warnings.append(f"跳过 ETF 基金 {item.fund_name}")
             continue
@@ -286,7 +290,7 @@ def create_candidates_from_text(
         if is_money_fund(session, fund_code):
             warnings.append(f"跳过 货币基金 {fund_code} {item.fund_name}")
             continue
-        amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
+        amount_cny, share, fee, confirm_date, _ = apply_trade_calculation(
             session,
             fund_code,
             item.action,
@@ -301,7 +305,7 @@ def create_candidates_from_text(
                 status=infer_candidate_status(item.raw_text),
                 fund_code=fund_code,
                 fund_name=item.fund_name,
-                trade_date=effective_trade_date,
+                trade_date=item.trade_date,
                 submitted_at=None,
                 confirm_date=confirm_date,
                 action=item.action,
@@ -473,7 +477,7 @@ def create_inferred_candidates_from_minimal_text(
         if not money:
             nav_item = session.exec(
                 select(FundNav)
-                .where(FundNav.fund_code == fund_code, FundNav.nav_date == effective_trade_date)
+                .where(FundNav.fund_code == fund_code, FundNav.nav_date == trade_day)
             ).first()
             nav_value = nav_item.unit_nav if nav_item else None
         session.add(
@@ -481,7 +485,7 @@ def create_inferred_candidates_from_minimal_text(
                 status=status,
                 fund_code=fund_code,
                 fund_name=fund_name,
-                trade_date=effective_trade_date,
+                trade_date=trade_day,
                 submitted_at=submitted_at,
                 confirm_date=confirm_date,
                 action=action,
@@ -543,6 +547,77 @@ def _is_fund_name_garbage(name: str) -> bool:
     if len(name) <= 3 and not any("\u4e00" <= ch <= "\u9fff" for ch in name):
         return True
     return False
+
+
+def _looks_like_action(name: str) -> bool:
+    return name in ("买入", "申购", "卖出", "赎回", "buy", "sell", "分红", "红利再投", "转换")
+
+
+def _lookup_fund_name_by_code(code: str) -> str:
+    from .fund_rule_sync import _fund_list_cache, _fund_list_failed
+    if _fund_list_cache is None or _fund_list_failed:
+        return ""
+    try:
+        df = _fund_list_cache
+        if hasattr(df, '__getitem__'):
+            matches = df[df['基金代码'].astype(str).str.zfill(6) == code.zfill(6)]
+            if len(matches) > 0:
+                return str(matches.iloc[0]['基金简称'])
+    except Exception:
+        pass
+    return ""
+
+
+_PLATFORM_MANAGERS = {
+    "易方达": "易方达",
+    "广发": "广发",
+    "鹏华": "鹏华",
+    "华夏": "华夏",
+    "南方": "南方",
+    "富国": "富国",
+    "嘉实": "嘉实",
+    "天弘": "支付宝",
+    "招商": "招商",
+    "博时": "博时",
+    "汇添富": "汇添富",
+    "华安": "华安",
+    "国泰": "国泰",
+    "华宝": "华宝",
+    "华泰柏瑞": "华泰柏瑞",
+    "中欧": "中欧",
+    "兴全": "兴全",
+    "景顺长城": "景顺长城",
+    "交银": "交银",
+    "工银": "工银瑞信",
+    "建信": "建信",
+    "银华": "银华",
+    "万家": "万家",
+    "信澳": "信澳",
+    "宝盈": "宝盈",
+    "华商": "华商",
+    "长城": "长城",
+    "国金": "国金",
+}
+
+
+def detect_platform(fund_name: str) -> str:
+    for manager, platform in _PLATFORM_MANAGERS.items():
+        if fund_name.startswith(manager):
+            return platform
+    return ""
+
+
+def auto_fill_platforms(session: Session) -> int:
+    updated = 0
+    for rule in session.exec(select(FundRule).where(FundRule.platform == "")).all():
+        pf = detect_platform(rule.fund_name)
+        if pf:
+            rule.platform = pf
+            session.add(rule)
+            updated += 1
+    if updated:
+        session.commit()
+    return updated
 
 
 def is_money_fund(session: Session, fund_code: str) -> bool:
@@ -1061,7 +1136,6 @@ def apply_trade_calculation(
         nav_value = 1.0
     if nav_value is None:
         return amount_cny, share, None, None, trade_date
-    nav_date = effective_trade_date
     confirm_date = find_nth_nav_date(
         session,
         fund_code,
@@ -1264,7 +1338,7 @@ def create_candidates_from_rows(
         parsed_share = parse_float_value(row.get("share"))
         parsed_nav = parse_float_value(row.get("nav"))
         nav = 1.0 if money else (parsed_nav or None)
-        amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
+        amount_cny, share, fee, confirm_date, _ = apply_trade_calculation(
             session,
             fund_code,
             action,
@@ -1287,7 +1361,7 @@ def create_candidates_from_rows(
             status=infer_candidate_status(f"{row} {source_status}"),
             fund_code=fund_code,
             fund_name=str(row.get("fund_name") or ""),
-            trade_date=effective_trade_date,
+            trade_date=trade_date,
             submitted_at=submitted_at,
             confirm_date=confirm_date,
             action=action,
@@ -2477,6 +2551,7 @@ def fund_rule_save(
     sell_confirm_days: int = Form(1),
     cutoff_time: str = Form("15:00"),
     buy_fee_rate: float = Form(0.0),
+    platform: str = Form(""),
     notes: str = Form(""),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
@@ -2488,6 +2563,7 @@ def fund_rule_save(
     rule.sell_confirm_days = max(sell_confirm_days, 0)
     rule.cutoff_time = cutoff_time or "15:00"
     rule.buy_fee_rate = max(buy_fee_rate, 0.0)
+    rule.platform = platform
     rule.notes = notes
     rule.sync_source = rule.sync_source or "manual"
     rule.updated_at = datetime.utcnow()
@@ -3675,6 +3751,21 @@ def transactions_page(
     if date_to:
         query = query.where(FundTransaction.trade_date <= date_to)
     transactions = session.exec(query.order_by(desc(FundTransaction.trade_date), desc(FundTransaction.id))).all()
+    # 按月份分组
+    from collections import OrderedDict
+    month_groups = OrderedDict()
+    for t in transactions:
+        month_key = t.trade_date.strftime("%Y-%m")
+        if month_key not in month_groups:
+            month_groups[month_key] = []
+        month_groups[month_key].append(t)
+    # 月度收入统计
+    monthly_income = OrderedDict()
+    for month_key, txs in month_groups.items():
+        buy_amt = sum(t.amount_cny or 0 for t in txs if t.action == TransactionAction.buy)
+        sell_amt = sum(t.amount_cny or 0 for t in txs if t.action == TransactionAction.sell)
+        div_amt = sum(t.amount_cny or 0 for t in txs if t.action in (TransactionAction.dividend, TransactionAction.dividend_reinvest))
+        monthly_income[month_key] = {"buy": buy_amt, "sell": sell_amt, "dividend": div_amt, "count": len(txs)}
     ignored_query = select(FundTransactionCandidate).where(
         FundTransactionCandidate.status == CandidateStatus.ignored
     )
@@ -3693,6 +3784,8 @@ def transactions_page(
         {
             "request": request,
             "transactions": transactions,
+            "month_groups": month_groups,
+            "monthly_income": monthly_income,
             "ignored_candidates": ignored_candidates,
             "actions": list(TransactionAction),
             "message": message,
@@ -3727,7 +3820,14 @@ def transaction_create(
     code = fund_code.strip().zfill(6)
     if not code.isdigit() or len(code) != 6:
         return transactions_redirect_with_message(return_to, "无效的基金代码")
-    rule = get_fund_rule(session, code)
+    name = fund_name.strip()
+    if not name:
+        rule = get_fund_rule(session, code)
+        name = rule.fund_name
+        if not name:
+            name = _lookup_fund_name_by_code(code)
+    else:
+        rule = get_fund_rule(session, code)
     amount_cny, share, fee, confirm_date, trade_date, nav = calculate_manual_transaction_values(
         session,
         code,
@@ -3742,7 +3842,7 @@ def transaction_create(
     )
     tx = FundTransaction(
         fund_code=code,
-        fund_name=fund_name.strip() or rule.fund_name,
+        fund_name=name,
         trade_date=trade_date,
         submitted_at=submitted_at,
         confirm_date=confirm_date,
@@ -3785,7 +3885,14 @@ def transaction_update(
     code = fund_code.strip().zfill(6)
     if not code.isdigit() or len(code) != 6:
         return transactions_redirect_with_message(return_to, "无效的基金代码")
-    rule = get_fund_rule(session, code)
+    name = fund_name.strip()
+    if not name:
+        rule = get_fund_rule(session, code)
+        name = rule.fund_name
+        if not name:
+            name = _lookup_fund_name_by_code(code)
+    else:
+        rule = get_fund_rule(session, code)
     amount_cny, share, fee, confirm_date, trade_date, nav = calculate_manual_transaction_values(
         session,
         code,
@@ -3799,7 +3906,7 @@ def transaction_update(
         confirm_date,
     )
     tx.fund_code = code
-    tx.fund_name = fund_name.strip() or rule.fund_name
+    tx.fund_name = name
     tx.trade_date = trade_date
     tx.submitted_at = submitted_at
     tx.confirm_date = confirm_date
@@ -3840,6 +3947,38 @@ def transaction_delete(
     return transactions_redirect_with_message(return_to, "流水已删除")
 
 
+@app.post("/holdings/update-platform")
+def update_fund_platform(
+    fund_code: str = Form(...),
+    platform: str = Form(""),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    code = fund_code.zfill(6)
+    rule = session.get(FundRule, code) or FundRule(fund_code=code)
+    rule.platform = platform.strip()
+    rule.updated_at = datetime.utcnow()
+    session.add(rule)
+    session.commit()
+    return redirect(f"/holdings?message={code}+平台已改为+{platform.strip() or '未分类'}")
+
+
+@app.post("/holdings/update-platform")
+def update_fund_platform(
+    fund_code: str = Form(...),
+    platform: str = Form(""),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    code = fund_code.zfill(6)
+    rule = session.get(FundRule, code) or FundRule(fund_code=code)
+    rule.platform = platform.strip()
+    rule.updated_at = datetime.utcnow()
+    session.add(rule)
+    session.commit()
+    return redirect("/holdings?message=" + code + "+平台已改为+" + (platform.strip() or "未分类"))
+
+
 @app.get("/holdings", response_class=HTMLResponse)
 def holdings_page(
     request: Request,
@@ -3847,12 +3986,57 @@ def holdings_page(
     session: Session = Depends(get_session),
 ):
     positions = calculate_position_summaries(session)
+    active = [item for item in positions if not item.is_closed]
+    closed = [item for item in positions if item.is_closed]
+    total_market = sum(p.market_value for p in active)
+    total_cost = sum(p.cost for p in active)
+    total_profit = sum(p.profit for p in active)
+    total_realized = sum(p.realized_profit for p in positions)
+    total_return = total_profit + total_realized
+    # 当日盈亏
+    daily_change = 0.0
+    for p in active:
+        if p.share > 0 and p.latest_nav and p.nav_date:
+            yesterday_nav = session.exec(
+                select(FundNav).where(
+                    FundNav.fund_code == p.fund_code,
+                    FundNav.nav_date < p.nav_date,
+                ).order_by(FundNav.nav_date.desc())
+            ).first()
+            if yesterday_nav and yesterday_nav.unit_nav:
+                daily_change += p.share * (p.latest_nav - yesterday_nav.unit_nav)
+    # 按平台分组
+    platforms: dict[str, dict] = {}
+    for p in active:
+        rule = session.get(FundRule, p.fund_code)
+        pf = rule.platform if rule and rule.platform else "未分类"
+        if pf not in platforms:
+            platforms[pf] = {"funds": [], "total_market": 0.0, "total_profit": 0.0, "total_cost": 0.0, "daily_change": 0.0}
+        platforms[pf]["funds"].append(p)
+        platforms[pf]["total_market"] += p.market_value
+        platforms[pf]["total_profit"] += p.profit
+        platforms[pf]["total_cost"] += p.cost
+        if p.share > 0 and p.latest_nav:
+            yesterday_nav = session.exec(
+                select(FundNav).where(
+                    FundNav.fund_code == p.fund_code,
+                    FundNav.nav_date < p.nav_date,
+                ).order_by(FundNav.nav_date.desc())
+            ).first()
+            if yesterday_nav and yesterday_nav.unit_nav:
+                platforms[pf]["daily_change"] += p.share * (p.latest_nav - yesterday_nav.unit_nav)
     return templates.TemplateResponse(
         "holdings.html",
         {
             "request": request,
-            "holdings": [item for item in positions if not item.is_closed],
-            "closed_positions": [item for item in positions if item.is_closed],
+            "holdings": active,
+            "platforms": platforms,
+            "closed_positions": closed,
+            "total_market": total_market,
+            "total_cost": total_cost,
+            "total_profit": total_profit,
+            "total_realized": total_realized,
+            "total_return": total_return,
             "xalpha_rows": xalpha_rows(session),
         },
     )
@@ -3909,6 +4093,7 @@ def performance_page(
     session: Session = Depends(get_session),
 ):
     charts = build_performance_charts(session)
+    aggregate_charts = build_aggregate_charts(session)
     latest_benchmark = session.exec(
         select(BenchmarkNav)
         .where(BenchmarkNav.benchmark_code == "000300")
@@ -3926,6 +4111,7 @@ def performance_page(
             "request": request,
             "message": message,
             "charts": charts,
+            "aggregate_charts": aggregate_charts,
             "latest_benchmark": latest_benchmark,
             "jobs": jobs,
             "format_return": format_return,

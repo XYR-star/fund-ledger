@@ -21,16 +21,17 @@ class Holding:
     market_value: float
     profit: float
     profit_rate: float | None
+    platform: str = ""
 
 
 @dataclass
 class PositionSummary(Holding):
-    realized_profit: float
-    realized_profit_rate: float | None
-    total_buy_amount: float
-    total_sell_amount: float
-    last_trade_date: date | None
-    is_closed: bool
+    realized_profit: float = 0.0
+    realized_profit_rate: float | None = None
+    total_buy_amount: float = 0.0
+    total_sell_amount: float = 0.0
+    last_trade_date: date | None = None
+    is_closed: bool = False
 
 
 def money_fund_codes(session: Session) -> set[str]:
@@ -89,13 +90,17 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
             item["realized_profit"] += net_proceeds - cost_reduction
             item["share"] = max(item["share"] - sell_share, 0.0)
         elif tx.action == TransactionAction.dividend:
-            item["realized_profit"] += amount or 0.0
+            item["cost"] = max(item["cost"] - (amount or 0.0), 0.0)
         elif tx.action == TransactionAction.dividend_reinvest:
             item["share"] += share or 0.0
             item["realized_profit"] += amount or 0.0
 
     positions: list[PositionSummary] = []
     latest_navs = latest_nav_by_fund(session, set(grouped))
+    platform_map = {
+        rule.fund_code: rule.platform or ""
+        for rule in session.exec(select(FundRule)).all()
+    }
     for fund_code, item in grouped.items():
         latest = latest_navs.get(fund_code)
         latest_nav = 1.0 if fund_code in money_codes else (latest.unit_nav if latest else None)
@@ -119,6 +124,7 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
                 market_value=market_value,
                 profit=profit,
                 profit_rate=profit_rate,
+                platform=platform_map.get(fund_code, ""),
                 realized_profit=item["realized_profit"],
                 realized_profit_rate=realized_profit_rate,
                 total_buy_amount=item["total_buy_amount"],

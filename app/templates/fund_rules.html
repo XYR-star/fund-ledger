@@ -91,6 +91,7 @@
         <label>卖出确认 T+<input type="number" min="0" step="1" name="sell_confirm_days" value="{{ rule.sell_confirm_days }}"></label>
         <label>截止时间<input name="cutoff_time" value="{{ rule.cutoff_time }}"></label>
         <label>买入费率<input type="number" min="0" step="0.0001" name="buy_fee_rate" value="{{ rule.buy_fee_rate }}"></label>
+        <label>平台<input name="platform" value="{{ rule.platform }}" placeholder="易方达"></label>
         <label>备注<input name="notes" value="{{ rule.notes }}"></label>
         <div class="actions"><button class="btn" type="submit">更新</button></div>
       </form>

@@ -37,6 +37,46 @@
   {% endif %}
 </section>
 
+{% if aggregate_charts %}
+<div class="chart-grid">
+  {% for chart in aggregate_charts %}
+  <section class="panel chart-card" style="{% if chart.fund_code == 'TOTAL' %}border:2px solid var(--accent);grid-column:1/-1{% endif %}">
+    <div class="chart-head">
+      <div>
+        <h2>{% if chart.fund_code == 'TOTAL' %}🏦 总体持仓{% else %}📊 {{ chart.fund_name }}{% endif %}</h2>
+        <p class="muted">{{ chart.start_date }} 至 {{ chart.end_date }}</p>
+      </div>
+      <div class="chart-metrics">
+        <span class="badge">基金 {{ format_return(chart.latest_return) }}</span>
+        <span class="badge">沪深300 {{ format_return(chart.benchmark_return) }}</span>
+        <span class="badge">超额 {{ format_return(chart.excess_return) }}</span>
+      </div>
+    </div>
+    <div class="chart-wrap" style="{% if chart.fund_code == 'TOTAL' %}height:340px{% endif %}">
+      <svg class="performance-chart" viewBox="0 0 100 100" preserveAspectRatio="none">
+        {% for tick in chart.y_ticks %}
+        <line class="chart-grid-line" x1="0" y1="{{ tick.y }}" x2="100" y2="{{ tick.y }}"/>
+        {% endfor %}
+        {% if chart.benchmark_area %}<path class="chart-area benchmark-fill" d="{{ chart.benchmark_area }}"/>{% endif %}
+        {% if chart.benchmark_path %}<path class="chart-line benchmark-line" d="{{ chart.benchmark_path }}"/>{% endif %}
+        {% if chart.svg_area %}<path class="chart-area fund-fill" d="{{ chart.svg_area }}"/>{% endif %}
+        <path class="chart-line fund-line" d="{{ chart.svg_path }}"/>
+      </svg>
+      <div class="chart-axis">
+        {% for tick in chart.y_ticks %}
+        <span style="top: {{ tick.y }}%">{{ tick.label }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="chart-legend">
+      <span><i class="legend-line fund"></i>持仓</span>
+      <span><i class="legend-line benchmark"></i>沪深300</span>
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+
 <div class="chart-grid">
   {% for chart in charts %}
   <section class="panel chart-card">

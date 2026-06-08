@@ -54,6 +54,30 @@
     </div>
   </form>
 </section>
+
+{% if monthly_income %}
+<section class="panel stack" style="margin-bottom:16px">
+  <h2>月度收支</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>月份</th><th>买入</th><th>卖出</th><th>分红</th><th>净流入</th><th>笔数</th></tr></thead>
+      <tbody>
+        {% for month, data in monthly_income.items() %}
+        <tr>
+          <td><strong>{{ month }}</strong></td>
+          <td>¥{{ "%.0f"|format(data.buy) }}</td>
+          <td style="color:{% if data.sell > 0 %}var(--danger){% endif %}">¥{{ "%.0f"|format(data.sell) }}</td>
+          <td style="color:var(--accent)">{% if data.dividend > 0 %}¥{{ "%.0f"|format(data.dividend) }}{% else %}-{% endif %}</td>
+          <td style="font-weight:bold; color:{% if data.buy - data.sell + data.dividend >= 0 %}var(--accent){% else %}var(--danger){% endif %}">¥{{ "%.0f"|format(data.buy - data.sell + data.dividend) }}</td>
+          <td>{{ data.count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 <div class="table-wrap">
   <table>
     <thead><tr><th>交易日</th><th>提交时间</th><th>确认日</th><th>代码</th><th>名称</th><th>动作</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th><th>来源</th><th>操作</th></tr></thead>

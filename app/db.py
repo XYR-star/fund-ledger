@@ -45,6 +45,8 @@ def migrate_schema() -> None:
             connection.execute(text("ALTER TABLE fundrule ADD COLUMN synced_at TIMESTAMP"))
         if "fund_type" not in columns:
             connection.execute(text("ALTER TABLE fundrule ADD COLUMN fund_type TEXT DEFAULT ''"))
+        if "platform" not in columns:
+            connection.execute(text("ALTER TABLE fundrule ADD COLUMN platform TEXT DEFAULT ''"))
         if "fundtransactioncandidate" in tables:
             candidate_columns = {
                 row[1] for row in connection.execute(text("PRAGMA table_info(fundtransactioncandidate)"))

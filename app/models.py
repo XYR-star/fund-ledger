@@ -51,6 +51,7 @@ class FundRule(SQLModel, table=True):
     cutoff_time: str = "15:00"
     buy_fee_rate: float = 0.0
     fund_type: str = ""
+    platform: str = ""
     sync_source: str = ""
     synced_at: Optional[datetime] = None
     notes: str = ""

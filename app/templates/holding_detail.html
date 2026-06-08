@@ -85,10 +85,11 @@
   <h2>交易流水</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>交易日</th><th>提交时间</th><th>确认日</th><th>操作</th><th>金额</th><th>份额</th><th>净值</th><th>手续费</th><th>来源</th></tr></thead>
+      <thead><tr><th>#</th><th>交易日</th><th>提交时间</th><th>确认日</th><th>操作</th><th>金额</th><th>份额</th><th>净值</th><th>手续费</th><th>来源</th></tr></thead>
       <tbody>
         {% for tx in transactions %}
         <tr>
+          <td class="muted" style="font-size:11px">{% if tx.candidate_id %}#{{ tx.candidate_id }}{% else %}手动{% endif %}</td>
           <td>{{ tx.trade_date }}</td>
           <td>{% if tx.submitted_at %}{{ tx.submitted_at.strftime('%H:%M') }}{% else %}-{% endif %}</td>
           <td>{{ tx.confirm_date or "-" }}</td>

@@ -74,6 +74,7 @@
   {% set quality = quality_by_candidate.get(c.id) %}
   <section class="panel stack">
     <div class="actions">
+      <span class="badge">#{{ c.id }}</span>
       <span class="badge">{{ c.status }}</span>
       {% if quality %}
       <span class="badge" title="{{ '；'.join(quality.issues) if quality.issues else '字段完整，可安全自动确认' }}"
