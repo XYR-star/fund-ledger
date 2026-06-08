@@ -675,7 +675,7 @@ def extract_amount(text: str) -> float | None:
 
 
 def infer_action(text: str) -> TransactionAction:
-    if any(word in text for word in ("赎回", "卖出", "sell", "SELL")):
+    if any(word in text for word in ("赎回", "卖出", "sell", "SELL", "转换")):
         return TransactionAction.sell
     if "红利再投" in text:
         return TransactionAction.dividend_reinvest
@@ -832,7 +832,7 @@ def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
 def extract_table_trade_value(chunk: list[str]) -> float | None:
     action_index = None
     for index, item in enumerate(chunk):
-        if any(word in item for word in ("申购", "赎回", "买入", "卖出", "强制调增", "强制调减", "分红")):
+        if any(word in item for word in ("申购", "赎回", "买入", "卖出", "强制调增", "强制调减", "分红", "转换")):
             action_index = index
             break
     scan = chunk[action_index + 1 :] if action_index is not None else chunk
