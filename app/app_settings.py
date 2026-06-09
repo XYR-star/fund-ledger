@@ -1,7 +1,5 @@
 import os
-from contextlib import contextmanager
 from datetime import datetime
-from typing import Iterator
 
 from sqlmodel import Session, select
 
@@ -9,38 +7,16 @@ from .models import AppSetting
 
 
 SECRET_KEYS = {
-    "DEEPSEEK_API_KEY",
-    "OCR_API_KEY",
     "BAIDU_OCR_API_KEY",
     "BAIDU_OCR_SECRET_KEY",
 }
 
 DEFAULTS = {
-    "DEEPSEEK_ENABLED": "true",
-    "DEEPSEEK_API_KEY": "",
-    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
-    "DEEPSEEK_MODEL": "deepseek-chat",
     "OCR_ENABLED": "true",
-    "OCR_BACKEND": "rapidocr",
-    "OCR_API_PROVIDER": "generic",
-    "OCR_API_URL": "",
-    "OCR_API_AUTH_HEADER": "Authorization",
-    "OCR_API_AUTH_PREFIX": "Bearer ",
-    "OCR_API_KEY": "",
-    "OCR_API_FILE_FIELD": "file",
-    "OCR_API_TEXT_PATH": "text",
+    "OCR_BACKEND": "baidu_table",
     "BAIDU_OCR_API_KEY": "",
     "BAIDU_OCR_SECRET_KEY": "",
-    "BAIDU_OCR_ENDPOINT": "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic",
-    "AUTO_MARKET_SYNC_ENABLED": "true",
-    "AUTO_MARKET_SYNC_TIME": "21:30",
-    "AUTO_MARKET_SYNC_TIMEZONE": "Asia/Shanghai",
-    "AUTO_MARKET_SYNC_LAST_RUN_DATE": "",
-    "AUTO_BACKUP_ENABLED": "true",
-    "AUTO_BACKUP_TIME": "02:10",
-    "AUTO_BACKUP_TIMEZONE": "Asia/Shanghai",
-    "AUTO_BACKUP_KEEP": "30",
-    "AUTO_BACKUP_LAST_RUN_DATE": "",
+    "BAIDU_TABLE_OCR_ENDPOINT": "https://aip.baidubce.com/rest/2.0/ocr/v1/table",
 }
 
 
@@ -85,21 +61,3 @@ def masked(value: str) -> str:
 
 def configured(value: str) -> bool:
     return bool(value.strip())
-
-
-@contextmanager
-def temporary_environ(values: dict[str, str]) -> Iterator[None]:
-    previous = {key: os.environ.get(key) for key in values}
-    try:
-        for key, value in values.items():
-            if value == "":
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value

@@ -4,85 +4,53 @@
 <div class="page-title">
   <div>
     <h1>导入文档</h1>
-    <p class="muted">上传文件、OCR 和解析状态。</p>
+    <p class="muted">共 {{ total }} 个 · {{ ocr_done }} 已完成 OCR · {{ pending }} 待处理</p>
   </div>
   <div class="actions">
     <a class="btn" href="/imports{% if show != 'all' %}?show=all{% endif %}">{{ "只看有效" if show == "all" else "显示全部" }}</a>
-    {% if summary.failed %}
-    <form method="post" action="/imports/retry-failed">
-      <button class="btn warn" type="submit">重跑失败 {{ summary.failed }}</button>
+    <form method="post" action="/imports/ocr-all" style="display:inline">
+      <button class="btn primary" type="submit">{% if pending %}一键 OCR ({{ pending }}){% else %}一键 OCR{% endif %}</button>
+    </form>
+    <a class="btn primary" href="/upload">上传</a>
+    {% if ocr_done %}
+    <form method="post" action="/imports/save-all-ocr" style="display:inline">
+      <button class="btn" type="submit">保存所有 OCR</button>
     </form>
     {% endif %}
-    <a class="btn primary" href="/upload">上传</a>
+    {% if total %}
+    <form method="post" action="/imports/delete-all" style="display:inline" onsubmit="return confirm('确定删除所有导入？')">
+      <button class="btn danger" type="submit">删除全部</button>
+    </form>
+    {% endif %}
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
-<div id="import-monitor" hx-get="/imports{% if show == 'all' %}?show=all{% endif %}" hx-trigger="every 3s" hx-swap="outerHTML" hx-select="#import-monitor">
-  <section class="panel stack" style="margin-bottom:16px">
-    <div class="metrics">
-      <div class="metric"><span>文档</span><strong>{{ summary.documents }}</strong></div>
-      <div class="metric"><span>处理中</span><strong>{{ summary.running }}</strong></div>
-      <div class="metric"><span>失败</span><strong>{{ summary.failed }}</strong></div>
-      <div class="metric"><span>待确认</span><strong>{{ summary.pending }}</strong></div>
-      <div class="metric"><span>可自动确认</span><strong>{{ summary.auto_confirmable }}</strong></div>
-      <div class="metric"><span>未匹配</span><strong>{{ summary.unmatched }}</strong></div>
-      <div class="metric"><span>正式流水</span><strong>{{ summary.transactions }}</strong></div>
-    </div>
-  </section>
+
+<section class="panel stack">
   <div class="table-wrap">
-  <table>
-    <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>候选</th><th>文本长度</th><th>更新时间</th><th>操作</th></tr></thead>
-    <tbody>
-      {% for doc in documents %}
-      {% set audit = audits.get(doc.id, {}) %}
-      <tr>
-        <td>{{ doc.id }}</td>
-        <td>
-          {{ doc.file_name or "手动文本" }}
-          {% if doc.error_message and '⚠' in doc.error_message %}
-          <span class="badge" style="background:var(--warn);color:#fff" title="{{ doc.error_message }}">重复?</span>
-          {% endif %}
-        </td>
-        <td><span class="badge">{{ doc.status.value }}</span></td>
-        <td>
-          <div class="actions">
-            <a class="badge" href="/candidates?source_hash={{ doc.source_hash }}">候选 {{ audit.get("candidates", 0) }}</a>
-            {% if audit.get("pending", 0) %}<a class="badge" href="/candidates?source_hash={{ doc.source_hash }}&status=pending">待确认 {{ audit.get("pending", 0) }}</a>{% endif %}
-            {% if audit.get("auto_confirmable", 0) %}<a class="badge" href="/candidates?source_hash={{ doc.source_hash }}&quality=auto" style="background:var(--accent);color:#fff">可自动 {{ audit.get("auto_confirmable", 0) }}</a>{% endif %}
-            {% if audit.get("unmatched", 0) %}<a class="badge" href="/candidates?source_hash={{ doc.source_hash }}&unmatched=1" style="background:var(--warn);color:#fff">未匹配 {{ audit.get("unmatched", 0) }}</a>{% endif %}
-            {% if audit.get("transactions", 0) %}<span class="badge">流水 {{ audit.get("transactions", 0) }}</span>{% endif %}
-          </div>
-        </td>
-        <td>{{ (doc.ocr_text or doc.raw_text)|length }}</td>
-        <td>{{ doc.updated_at }}</td>
-        <td>
-          <div class="actions">
-            <a class="btn" href="/imports/{{ doc.id }}">打开</a>
-            {% if doc.status.value == "archived" or doc.status.value == "deleted" %}
-            <form method="post" action="/imports/{{ doc.id }}/restore">
-              <button class="btn" type="submit">恢复</button>
+    <table>
+      <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>OCR</th><th>时间</th><th>操作</th></tr></thead>
+      <tbody>
+        {% for doc in documents %}
+        <tr>
+          <td><a href="/imports/{{ doc.id }}">#{{ doc.id }}</a></td>
+          <td>{{ doc.file_name or "手动文本" }}</td>
+          <td><span class="badge">{{ doc.status.value }}</span></td>
+          <td>{{ doc.ocr_text[:30] if doc.ocr_text else "-" }}</td>
+          <td>{{ doc.created_at.strftime("%m-%d %H:%M") }}</td>
+          <td>
+            <a class="btn" style="padding:2px 8px;font-size:12px" href="/imports/{{ doc.id }}">查看</a>
+            <form method="post" action="/imports/{{ doc.id }}/delete" style="display:inline" onsubmit="return confirm('确定删除？')">
+              <button class="btn" style="padding:2px 8px;font-size:12px" type="submit">删除</button>
             </form>
-            {% else %}
-            <form method="post" action="/imports/{{ doc.id }}/archive">
-              <button class="btn" type="submit">归档</button>
-            </form>
-            {% if doc.status.value == "error" %}
-            <form method="post" action="/imports/{{ doc.id }}/retry">
-              <button class="btn warn" type="submit">重跑</button>
-            </form>
+            {% if doc.error_message %}
+            <span class="muted" style="font-size:11px">{{ doc.error_message[:30] }}</span>
             {% endif %}
-            <form method="post" action="/imports/{{ doc.id }}/delete">
-              <button class="btn danger" type="submit">删除</button>
-            </form>
-            {% endif %}
-          </div>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="7" class="muted">暂无导入文档。</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% endblock %}

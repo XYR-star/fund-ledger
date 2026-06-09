@@ -2218,10 +2218,9 @@ async def test_llm_row_uses_ocr_source_status_and_submitted_time_for_duplicates(
         assert {tx.submitted_at.strftime("%H:%M") for tx in transactions} == {"09:38", "12:28"}
 
 
-async def test_auto_import_keeps_ocr_text_separate_from_llm_response(client, monkeypatch):
+async def test_auto_import_handles_cancelled_order_with_table_ocr(client, monkeypatch):
     import app.db
     import app.main
-    from app.llm import LlmParseResult
     from app.models import CandidateStatus, FundTransactionCandidate, ImportDocument, ImportStatus
     from app.ocr import OcrResult
 
@@ -2241,26 +2240,7 @@ async def test_auto_import_keeps_ocr_text_separate_from_llm_response(client, mon
             "明细",
         ]
     )
-    llm_response = '[{"fund_code":"019872","fund_name":"长城短债D","trade_date":"2026-04-14","submitted_at":"11:48","action":"buy","amount_cny":10000}]'
     monkeypatch.setattr(app.main, "recognize_file", lambda *_: OcrResult(text=ocr_text, confidence=0.99))
-    monkeypatch.setattr(app.main, "is_deepseek_configured", lambda config=None: True)
-    monkeypatch.setattr(
-        app.main,
-        "parse_with_deepseek",
-        lambda *_: LlmParseResult(
-            raw_response=llm_response,
-            parsed_json=[
-                {
-                    "fund_code": "019872",
-                    "fund_name": "长城短债D",
-                    "trade_date": "2026-04-14",
-                    "submitted_at": "11:48",
-                    "action": "buy",
-                    "amount_cny": 10000,
-                }
-            ],
-        ),
-    )
     with Session(app.db.engine) as session:
         document = ImportDocument(
             file_name="cancelled.png",
@@ -2274,17 +2254,16 @@ async def test_auto_import_keeps_ocr_text_separate_from_llm_response(client, mon
         doc_id = document.id
 
     message = app.main.process_auto_import_job({"document_id": doc_id})
-    assert "DeepSeek 解析" in message
+    assert "规则解析" in message
     with Session(app.db.engine) as session:
         document = session.get(ImportDocument, doc_id)
         assert document.ocr_text == ocr_text
-        assert document.llm_text == llm_response
         candidate = session.exec(select(FundTransactionCandidate)).one()
         assert candidate.status == CandidateStatus.ignored
         assert "已撤销" in candidate.raw_text
 
 
-async def test_table_ocr_parser_extracts_status_before_llm(client):
+async def test_table_ocr_parser_extracts_status(client):
     import app.db
     from app.main import create_candidates_from_text
     from app.models import CandidateStatus, FundRule, FundTransactionCandidate

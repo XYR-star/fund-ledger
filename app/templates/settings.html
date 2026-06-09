@@ -4,36 +4,12 @@
 <div class="page-title">
   <div>
     <h1>设置</h1>
-    <p class="muted">密钥留空表示保留当前值；页面只显示配置状态，不回显完整密钥。</p>
+    <p class="muted">密钥留空表示保留当前值。</p>
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
 
 <form class="stack" method="post" action="/settings">
-  <section class="panel stack">
-    <h2>DeepSeek 解析</h2>
-    <div class="form-grid">
-      <label>启用
-        <select name="deepseek_enabled">
-          <option value="on" {% if config.DEEPSEEK_ENABLED == "true" %}selected{% endif %}>启动</option>
-          <option value="off" {% if config.DEEPSEEK_ENABLED != "true" %}selected{% endif %}>停止</option>
-        </select>
-      </label>
-      <label>API Key
-        <input type="password" name="deepseek_api_key" placeholder="{{ masked(config.DEEPSEEK_API_KEY) }}" autocomplete="off">
-      </label>
-      <label>Base URL
-        <input name="deepseek_base_url" value="{{ config.DEEPSEEK_BASE_URL }}">
-      </label>
-      <label>模型
-        <input name="deepseek_model" value="{{ config.DEEPSEEK_MODEL }}">
-      </label>
-      <label>状态
-        <input value="{{ '已启用且已配置' if config.DEEPSEEK_ENABLED == 'true' and configured(config.DEEPSEEK_API_KEY) else ('已配置但已停止' if configured(config.DEEPSEEK_API_KEY) else '未配置') }}" disabled>
-      </label>
-    </div>
-  </section>
-
   <section class="panel stack">
     <h2>OCR 后端</h2>
     <div class="form-grid">
@@ -45,10 +21,9 @@
       </label>
       <label>后端
         <select name="ocr_backend">
-          <option value="rapidocr" {% if config.OCR_BACKEND == "rapidocr" %}selected{% endif %}>本地 RapidOCR（默认）</option>
-          <option value="baidu" {% if config.OCR_BACKEND == "baidu" %}selected{% endif %}>百度 OCR API</option>
+          <option value="baidu_table" {% if config.OCR_BACKEND == "baidu_table" %}selected{% endif %}>百度表格 OCR（推荐）</option>
+          <option value="rapidocr" {% if config.OCR_BACKEND == "rapidocr" %}selected{% endif %}>本地 RapidOCR</option>
           <option value="api" {% if config.OCR_BACKEND == "api" %}selected{% endif %}>通用 OCR API</option>
-          <option value="paddle" {% if config.OCR_BACKEND == "paddle" %}selected{% endif %}>PaddleOCR</option>
         </select>
       </label>
       <label>状态
@@ -58,31 +33,7 @@
   </section>
 
   <section class="panel stack">
-    <h2>通用 OCR API</h2>
-    <div class="form-grid">
-      <label>API URL
-        <input name="ocr_api_url" value="{{ config.OCR_API_URL }}" placeholder="https://example.com/ocr">
-      </label>
-      <label>鉴权 Header
-        <input name="ocr_api_auth_header" value="{{ config.OCR_API_AUTH_HEADER }}">
-      </label>
-      <label>鉴权前缀
-        <input name="ocr_api_auth_prefix" value="{{ config.OCR_API_AUTH_PREFIX }}">
-      </label>
-      <label>API Key
-        <input type="password" name="ocr_api_key" placeholder="{{ masked(config.OCR_API_KEY) }}" autocomplete="off">
-      </label>
-      <label>文件字段名
-        <input name="ocr_api_file_field" value="{{ config.OCR_API_FILE_FIELD }}">
-      </label>
-      <label>文本 JSON 路径
-        <input name="ocr_api_text_path" value="{{ config.OCR_API_TEXT_PATH }}" placeholder="data.text">
-      </label>
-    </div>
-  </section>
-
-  <section class="panel stack">
-    <h2>百度 OCR API</h2>
+    <h2>百度 OCR（表格识别）</h2>
     <div class="form-grid">
       <label>API Key
         <input type="password" name="baidu_ocr_api_key" placeholder="{{ masked(config.BAIDU_OCR_API_KEY) }}" autocomplete="off">
@@ -90,60 +41,10 @@
       <label>Secret Key
         <input type="password" name="baidu_ocr_secret_key" placeholder="{{ masked(config.BAIDU_OCR_SECRET_KEY) }}" autocomplete="off">
       </label>
-      <label>Endpoint
-        <input name="baidu_ocr_endpoint" value="{{ config.BAIDU_OCR_ENDPOINT }}">
-      </label>
       <label>状态
         <input value="{{ '已配置' if configured(config.BAIDU_OCR_API_KEY) and configured(config.BAIDU_OCR_SECRET_KEY) else '未配置' }}" disabled>
       </label>
     </div>
-  </section>
-
-  <section class="panel stack">
-    <h2>自动净值与曲线更新</h2>
-    <div class="form-grid">
-      <label>启用
-        <select name="auto_market_sync_enabled">
-          <option value="on" {% if config.AUTO_MARKET_SYNC_ENABLED == "true" %}selected{% endif %}>启动</option>
-          <option value="off" {% if config.AUTO_MARKET_SYNC_ENABLED != "true" %}selected{% endif %}>停止</option>
-        </select>
-      </label>
-      <label>每日时间
-        <input type="time" name="auto_market_sync_time" value="{{ config.AUTO_MARKET_SYNC_TIME }}">
-      </label>
-      <label>时区
-        <input name="auto_market_sync_timezone" value="{{ config.AUTO_MARKET_SYNC_TIMEZONE }}">
-      </label>
-      <label>上次自动运行
-        <input value="{{ config.AUTO_MARKET_SYNC_LAST_RUN_DATE or '暂无' }}" disabled>
-      </label>
-    </div>
-    <p class="muted">自动任务会同步当前未清仓持仓基金的净值，并刷新收益曲线使用的沪深300基准。</p>
-  </section>
-
-  <section class="panel stack">
-    <h2>自动备份</h2>
-    <div class="form-grid">
-      <label>启用
-        <select name="auto_backup_enabled">
-          <option value="on" {% if config.AUTO_BACKUP_ENABLED == "true" %}selected{% endif %}>启动</option>
-          <option value="off" {% if config.AUTO_BACKUP_ENABLED != "true" %}selected{% endif %}>停止</option>
-        </select>
-      </label>
-      <label>每日时间
-        <input type="time" name="auto_backup_time" value="{{ config.AUTO_BACKUP_TIME }}">
-      </label>
-      <label>时区
-        <input name="auto_backup_timezone" value="{{ config.AUTO_BACKUP_TIMEZONE }}">
-      </label>
-      <label>保留份数
-        <input type="number" min="1" step="1" name="auto_backup_keep" value="{{ config.AUTO_BACKUP_KEEP }}">
-      </label>
-      <label>上次自动运行
-        <input value="{{ config.AUTO_BACKUP_LAST_RUN_DATE or '暂无' }}" disabled>
-      </label>
-    </div>
-    <p class="muted">自动备份会写入 /www/data/fund-ledger/backups，并按保留份数清理旧文件。</p>
   </section>
 
   <div class="actions">

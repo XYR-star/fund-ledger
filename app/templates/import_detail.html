@@ -1,135 +1,51 @@
 {% extends "base.html" %}
 {% block title %}导入 #{{ document.id }} - Fund Ledger{% endblock %}
 {% block content %}
-<div id="import-detail-content" hx-get="/imports/{{ document.id }}" hx-trigger="every 3s" hx-swap="outerHTML" hx-select="#import-detail-content">
 <div class="page-title">
   <div>
     <h1>导入 #{{ document.id }}</h1>
-    <p class="muted">{{ document.file_name or "手动文本" }} · {{ document.status.value }}</p>
+    <p class="muted">{{ document.file_name or "手动输入" }} · {{ document.status.value }}</p>
   </div>
   <div class="actions">
-    <a class="btn" href="/imports">返回导入列表</a>
-    {% if document.status.value == "archived" or document.status.value == "deleted" %}
-    <form method="post" action="/imports/{{ document.id }}/restore">
-      <button class="btn" type="submit">恢复</button>
-    </form>
-    {% else %}
-    <form method="post" action="/imports/{{ document.id }}/archive">
+    <a class="btn" href="/imports">返回列表</a>
+    <form method="post" action="/imports/{{ document.id }}/archive" style="display:inline">
       <button class="btn" type="submit">归档</button>
     </form>
-    <form method="post" action="/imports/{{ document.id }}/delete">
+    <form method="post" action="/imports/{{ document.id }}/delete" style="display:inline" onsubmit="return confirm('确定删除？')">
       <button class="btn danger" type="submit">删除</button>
     </form>
-    {% endif %}
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
 {% if document.error_message %}
-<section class="panel{% if '⚠' in document.error_message %} warn{% else %} error{% endif %}">{{ document.error_message }}</section>
+<section class="panel error">{{ document.error_message }}</section>
 {% endif %}
 
 <section class="panel stack">
-  <h2>文件与动作</h2>
+  <h2>操作</h2>
   <div class="actions">
     {% if document.source_file %}
     <form method="post" action="/imports/{{ document.id }}/ocr">
-      <button class="btn primary" type="submit">运行本地 OCR</button>
+      <button class="btn primary" type="submit">OCR 识别</button>
     </form>
     {% endif %}
-    <form method="post" action="/imports/{{ document.id }}/parse">
-      <button class="btn" type="submit">规则解析为候选</button>
-    </form>
-    <form method="post" action="/imports/{{ document.id }}/parse">
-      <input type="hidden" name="use_llm" value="true">
-      <button class="btn" type="submit" {% if not llm_configured %}disabled{% endif %}>DeepSeek 解析</button>
-    </form>
-    <form method="post" action="/imports/{{ document.id }}/retry">
-      <button class="btn warn" type="submit">重跑自动导入</button>
-    </form>
-    {% if audit.auto_confirmable %}
-    <form method="post" action="/candidates/auto-confirm-safe">
-      <input type="hidden" name="source_hash" value="{{ document.source_hash }}">
-      <input type="hidden" name="return_to" value="/candidates?source_hash={{ document.source_hash }}">
-      <button class="btn primary" type="submit">自动确认高质量 {{ audit.auto_confirmable }}</button>
+    {% if document.ocr_text %}
+    <form method="post" action="/imports/{{ document.id }}/save-ocr" style="display:inline">
+      <button class="btn" type="submit">保存 OCR 结果</button>
     </form>
     {% endif %}
   </div>
-  {% if not llm_configured %}
-  <p class="muted">DeepSeek 尚未配置。可在设置页保存 API Key 后直接使用。</p>
-  {% endif %}
-	  <p class="muted">当前 OCR 后端：{{ ocr_backend }}。可在设置页切换本地 OCR 或 OCR API。</p>
-	</section>
-
-<section class="panel stack" style="margin-top:16px">
-  <h2>导入审计</h2>
-  <div class="metrics">
-    <div class="metric"><span>候选</span><strong>{{ audit.candidates }}</strong></div>
-    <div class="metric"><span>待确认</span><strong>{{ audit.pending }}</strong></div>
-    <div class="metric"><span>已确认</span><strong>{{ audit.confirmed }}</strong></div>
-    <div class="metric"><span>已忽略</span><strong>{{ audit.ignored }}</strong></div>
-    <div class="metric"><span>未匹配</span><strong>{{ audit.unmatched }}</strong></div>
-    <div class="metric"><span>可自动确认</span><strong>{{ audit.auto_confirmable }}</strong></div>
-    <div class="metric"><span>低置信度</span><strong>{{ audit.low_confidence }}</strong></div>
-    <div class="metric"><span>正式流水</span><strong>{{ audit.transactions }}</strong></div>
-    <div class="metric"><span>确认率</span><strong>{{ audit.success_rate }}%</strong></div>
-  </div>
-  {% if audit.duplicate_candidates %}
-  <p class="muted">发现 {{ audit.duplicate_candidates }} 组同文件疑似重复候选，确认时会自动跳过重复入账。</p>
-  {% endif %}
-  {% if audit.unmatched or audit.low_confidence %}
-  <p class="muted">批次建议：先处理未匹配基金和低置信度候选，再执行自动确认。</p>
-  {% endif %}
+  <p class="muted">状态: {{ document.status.value }} · OCR 后端：{{ ocr_backend }}</p>
 </section>
 
-{% if jobs %}
+{% if document.ocr_text or document.source_file %}
 <section class="panel stack" style="margin-top:16px">
-  <h2>后台任务</h2>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>ID</th><th>类型</th><th>状态</th><th>结果</th><th>时间</th><th>操作</th></tr></thead>
-      <tbody>
-        {% for job in jobs %}
-        <tr>
-          <td>{{ job.id }}</td>
-          <td>{{ job.job_type }}</td>
-          <td><span class="badge">{{ job.status.value }}</span></td>
-          <td>{{ job.result_message or job.error_message or "-" }}</td>
-          <td>{{ job.finished_at or job.started_at or job.created_at }}</td>
-          <td>
-            {% if job.status.value == "error" %}
-            <form method="post" action="/imports/{{ document.id }}/retry">
-              <button class="btn warn" type="submit">重跑</button>
-            </form>
-            {% else %}
-            <span class="muted">-</span>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+  <h2>OCR 结果</h2>
+  {% if document.ocr_text %}
+  <pre style="max-height:400px;overflow:auto;font-size:12px;line-height:1.4;white-space:pre-wrap">{{ document.ocr_text }}</pre>
+  {% else %}
+  <p class="muted">尚未 OCR</p>
+  {% endif %}
 </section>
 {% endif %}
-
-	<section class="panel stack" style="margin-top:16px">
-  <h2>文本</h2>
-  <form class="stack" method="post" action="/imports/{{ document.id }}/text">
-    <label>手动文本
-      <textarea name="raw_text">{{ document.raw_text }}</textarea>
-    </label>
-    <label>OCR 原文
-      <textarea name="ocr_text">{{ document.ocr_text }}</textarea>
-    </label>
-    <label>LLM 解析响应
-      <textarea name="llm_text">{{ document.llm_text }}</textarea>
-    </label>
-    <div class="actions">
-      <button class="btn primary" type="submit">保存文本</button>
-      <a class="btn" href="/candidates">查看候选</a>
-      <a class="btn" href="/candidates?source_hash={{ document.source_hash }}">查看本导入候选</a>
-    </div>
-  </form>
-</section>
-</div>
 {% endblock %}

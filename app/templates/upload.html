@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}上传 - Fund Ledger{% endblock %}
 {% block content %}
+
 <div class="page-title">
   <div>
     <h1>上传交易记录</h1>
-    <p class="muted">支持批量上传截图或 PDF；上传后会自动排队 OCR、解析和同步相关数据。</p>
+    <p class="muted">支持批量上传截图或 PDF；上传后请在导入详情中手动运行 OCR 和解析。</p>
   </div>
 </div>
 
@@ -16,10 +17,9 @@
     <label>交易文本
       <textarea name="raw_text" placeholder="2024-01-02 161725 招商中证白酒 buy 1000 - 1.2345 1.00"></textarea>
     </label>
-    <p class="sample">可一次选择多个文件。文本框适合临时粘贴交易文本；上传后系统会自动进入导入队列，字段缺失或识别失败会在导入详情里显示错误。</p>
+    <p class="sample">可一次选择多个文件。文本框适合临时粘贴交易文本；上传后到导入列表点击 OCR 识别。</p>
     <div class="actions">
-      <button class="btn primary" type="submit">上传并自动导入</button>
-      <a class="btn" href="/candidates">查看候选</a>
+      <button class="btn primary" type="submit">上传</button>
     </div>
   </form>
 </section>

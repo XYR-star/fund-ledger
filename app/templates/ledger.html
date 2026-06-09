@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}流水表 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>交易流水表</h1>
+    <p class="muted">共 {{ total }} 条 · 成功 {{ success }} · 非成功 {{ non_success }} · 未匹配 {{ unmatched }}</p>
+  </div>
+  <div class="actions">
+    <form method="post" action="/ledger/clean" style="display:inline">
+      <button class="btn primary" type="submit">清洗</button>
+    </form>
+    <a class="btn" href="/imports">返回导入</a>
+  </div>
+</div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+{% if extracting %}<section class="panel warn">⏳ 提取进行中，请稍后刷新页面查看结果</section>{% endif %}
+
+{% set open_count = rows|selectattr("fund_type", "equalto", "open_fund")|list|length %}
+{% set etf_count = rows|selectattr("fund_type", "equalto", "etf")|list|length %}
+{% set money_count = rows|selectattr("fund_type", "equalto", "money_fund")|list|length %}
+
+<div style="display:flex;gap:8px;margin-bottom:12px">
+  <a class="btn" href="#tab-open" {% if open_count == 0 %}style="opacity:0.5"{% endif %}>场外基金 ({{ open_count }})</a>
+  <a class="btn" href="#tab-etf" {% if etf_count == 0 %}style="opacity:0.5"{% endif %}>ETF ({{ etf_count }})</a>
+  <a class="btn" href="#tab-money" {% if money_count == 0 %}style="opacity:0.5"{% endif %}>货币基金 ({{ money_count }})</a>
+</div>
+
+{% for type_label, type_key, type_count in [("场外基金", "open_fund", open_count), ("ETF", "etf", etf_count), ("货币基金", "money_fund", money_count)] %}
+<section class="panel stack" style="margin-top:16px" id="tab-{{ type_key }}">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h2>{{ type_label }} ({{ type_count }})</h2>
+    {% if type_count > 0 %}
+    <form method="post" action="/ledger/extract/{{ type_key }}" style="display:inline">
+      <button class="btn primary" type="submit" {% if extracting %}disabled{% endif %}>{% if extracting %}提取中...{% else %}提取{% endif %}</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="table-wrap" style="max-height:400px;overflow:auto">
+    <table>
+      <thead><tr>
+        <th>基金名称</th>
+        <th>代码</th>
+        <th>操作</th>
+        <th>金额</th>
+        <th>份额</th>
+        <th>日期</th>
+        <th>状态</th>
+        <th>净值</th>
+        <th>备注</th>
+      </tr></thead>
+      <tbody>
+        {% for r in rows if r.fund_type == type_key %}
+        <tr>
+          <td title="{{ r.fund_name_raw }}">{{ r.fund_name_raw[:30] if r.fund_name_raw else "-" }}</td>
+          <td>{{ r.fund_code or "?" }}</td>
+          <td>{{ r.direction }}</td>
+          <td>{{ r.amount_cny or "-" }}</td>
+          <td>{{ r.share or "-" }}</td>
+          <td>{{ r.trade_date[:10] if r.trade_date else "-" }}</td>
+          <td><span class="badge">{{ r.status_std }}</span></td>
+          <td>{{ r.nav if r.nav else "-" }}</td>
+          <td style="font-size:11px">{{ r.note if r.note else "" }}</td>
+        </tr>
+        {% endfor %}
+        {% if type_count == 0 %}
+        <tr><td colspan="9" class="muted" style="text-align:center">暂无数据</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+{% endblock %}
