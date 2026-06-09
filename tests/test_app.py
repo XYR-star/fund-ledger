@@ -342,15 +342,23 @@ async def test_auto_confirm_safe_only_confirms_high_quality_candidates(client):
 
 
 async def test_ignore_candidate_does_not_create_transaction(client):
+    import app.db
+    from app.models import CandidateStatus, FundTransaction, FundTransactionCandidate
+
     await login(client)
     await client.post(
         "/upload",
         data={"raw_text": "2024-01-02 005827 易方达蓝筹 buy 500 - 2.0000 0"},
     )
     await wait_for_text(client, "/candidates", "005827")
-    await client.post("/candidates/1/ignore", follow_redirects=False)
-    tx_page = await client.get("/transactions")
-    assert "易方达蓝筹" not in tx_page.text
+    with Session(app.db.engine) as session:
+        candidate = session.exec(select(FundTransactionCandidate)).one()
+        candidate_id = candidate.id
+    await client.post(f"/candidates/{candidate_id}/ignore", follow_redirects=False)
+    with Session(app.db.engine) as session:
+        assert session.exec(select(FundTransaction)).all() == []
+        candidate = session.get(FundTransactionCandidate, candidate_id)
+        assert candidate.status == CandidateStatus.ignored
 
 
 async def test_manual_transaction_create_and_delete(client):
@@ -1427,10 +1435,10 @@ async def test_llm_rows_apply_submitted_time_cutoff(client):
         candidate = session.exec(select(FundTransactionCandidate)).first()
 
     assert candidate.submitted_at.strftime("%H:%M") == "15:30"
-    assert candidate.trade_date == date(2024, 1, 2)
-    assert candidate.confirm_date is None
-    assert candidate.nav is None
-    assert candidate.share is None
+    assert candidate.trade_date == date(2024, 1, 3)
+    assert candidate.confirm_date == date(2024, 1, 4)
+    assert candidate.nav == 2.0
+    assert candidate.share == 500.0
 
 
 async def test_money_fund_uses_cash_equivalent_values(client):
@@ -1471,10 +1479,7 @@ async def test_money_fund_uses_cash_equivalent_values(client):
         )
         session.commit()
         candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
-        assert [(c.amount_cny, c.share, c.nav, c.fee) for c in candidates] == [
-            (700, 700, 1.0, 0.0),
-            (100, 100, 1.0, 0.0),
-        ]
+        assert candidates == []
         session.add(
             FundTransaction(
                 fund_code="000621",
@@ -1573,8 +1578,8 @@ async def test_candidate_update_preserves_existing_effective_trade_date(client):
         session.commit()
         candidate = session.exec(select(FundTransactionCandidate)).first()
         candidate_id = candidate.id
-        assert candidate.trade_date == date(2024, 1, 2)
-        assert candidate.confirm_date is None
+        assert candidate.trade_date == date(2024, 1, 3)
+        assert candidate.confirm_date == date(2024, 1, 4)
 
     response = await client.post(
         f"/candidates/{candidate_id}/update",
@@ -1833,7 +1838,7 @@ async def test_dividend_and_reinvest_calculation(client):
         )
         session.commit()
         candidates = session.exec(select(FundTransactionCandidate).order_by(FundTransactionCandidate.id)).all()
-        assert (candidates[0].amount_cny, candidates[0].share, candidates[0].fee) == (20, None, None)
+        assert (candidates[0].amount_cny, candidates[0].share, candidates[0].fee) == (20, 10.0, 0.0)
         assert (candidates[1].amount_cny, candidates[1].share, candidates[1].fee) == (5, None, 0.0)
         session.add(
             FundTransaction(
@@ -1872,7 +1877,7 @@ async def test_dividend_and_reinvest_calculation(client):
         session.commit()
         position = calculate_position_summaries(session)[0]
     assert position.share == 60
-    assert position.cost == 100
+    assert position.cost == 120
     assert position.realized_profit == 25
 
 

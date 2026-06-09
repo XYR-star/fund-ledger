@@ -475,17 +475,13 @@ def create_inferred_candidates_from_minimal_text(
         )
         nav_value = 1.0 if money else None
         if not money:
-            nav_item = session.exec(
-                select(FundNav)
-                .where(FundNav.fund_code == fund_code, FundNav.nav_date == trade_day)
-            ).first()
-            nav_value = nav_item.unit_nav if nav_item else None
+            nav_value = nav_value_on_date(session, fund_code, effective_trade_date)
         session.add(
             FundTransactionCandidate(
                 status=status,
                 fund_code=fund_code,
                 fund_name=fund_name,
-                trade_date=trade_day,
+                trade_date=effective_trade_date,
                 submitted_at=submitted_at,
                 confirm_date=confirm_date,
                 action=action,
@@ -860,11 +856,6 @@ def source_status_from_chunk(text: str) -> str:
     return ""
 
 
-def infer_candidate_status_for_row(row: dict[str, Any], source_text: str | None = None) -> CandidateStatus:
-    source_status = source_status_for_row(row, source_text or "")
-    return infer_candidate_status(f"{row} {source_status}")
-
-
 def source_status_for_row(row: dict[str, Any], source_text: str) -> str:
     if not source_text:
         return ""
@@ -1157,12 +1148,12 @@ def apply_trade_calculation(
     elif action == TransactionAction.sell:
         effective_share = share
         if effective_share and effective_share > 0:
-            fee = 0.0 if money else infer_redemption_fee(session, fund_code, effective_share, nav_value, nav_date)
+            fee = 0.0 if money else infer_redemption_fee(session, fund_code, effective_share, nav_value, effective_trade_date)
             if not amount_cny:
                 amount_cny = round(effective_share * nav_value - (fee or 0), 2)
         elif amount_cny and amount_cny > 0:
             share = round(amount_cny / nav_value, 2)
-            fee = 0.0 if money else infer_redemption_fee(session, fund_code, share, nav_value, nav_date)
+            fee = 0.0 if money else infer_redemption_fee(session, fund_code, share, nav_value, effective_trade_date)
     elif action == TransactionAction.dividend:
         fee = 0.0
         share = None
@@ -1338,7 +1329,7 @@ def create_candidates_from_rows(
         parsed_share = parse_float_value(row.get("share"))
         parsed_nav = parse_float_value(row.get("nav"))
         nav = 1.0 if money else (parsed_nav or None)
-        amount_cny, share, fee, confirm_date, _ = apply_trade_calculation(
+        amount_cny, share, fee, confirm_date, effective_trade_date = apply_trade_calculation(
             session,
             fund_code,
             action,
@@ -1361,7 +1352,7 @@ def create_candidates_from_rows(
             status=infer_candidate_status(f"{row} {source_status}"),
             fund_code=fund_code,
             fund_name=str(row.get("fund_name") or ""),
-            trade_date=trade_date,
+            trade_date=effective_trade_date,
             submitted_at=submitted_at,
             confirm_date=confirm_date,
             action=action,
@@ -3258,7 +3249,11 @@ def candidate_ignore(
         raise HTTPException(status_code=404)
     if candidate.status == CandidateStatus.ignored:
         candidate.status = CandidateStatus.pending
-    elif candidate.status != CandidateStatus.confirmed:
+    else:
+        if candidate.status == CandidateStatus.confirmed:
+            for tx in transactions_for_candidate(session, candidate):
+                session.delete(tx)
+            candidate.confirmed_transaction_id = None
         candidate.status = CandidateStatus.ignored
     candidate.updated_at = datetime.utcnow()
     session.add(candidate)
@@ -3325,7 +3320,11 @@ def candidates_auto_confirm_safe(
 
 
 def confirm_candidate_transaction(session: Session, candidate: FundTransactionCandidate, force: bool = False) -> bool:
+    if candidate.id is not None:
+        session.refresh(candidate)
     if candidate.status == CandidateStatus.confirmed:
+        return False
+    if candidate.status == CandidateStatus.ignored:
         return False
     if infer_candidate_status(candidate.raw_text) == CandidateStatus.ignored:
         candidate.status = CandidateStatus.ignored
@@ -3343,6 +3342,10 @@ def confirm_candidate_transaction(session: Session, candidate: FundTransactionCa
     if not force:
         duplicate = find_duplicate_transaction(session, candidate)
         if duplicate:
+            candidate.status = CandidateStatus.confirmed
+            candidate.confirmed_transaction_id = duplicate.id
+            candidate.updated_at = datetime.utcnow()
+            session.add(candidate)
             return False
     fee = candidate.fee
     if candidate.action == TransactionAction.sell and candidate.share and candidate.nav and fee is None:
@@ -3377,6 +3380,34 @@ def confirm_candidate_transaction(session: Session, candidate: FundTransactionCa
     session.add(candidate)
     audit_log(session, "candidate.confirm", "candidate", str(candidate.id), f"transaction={tx.id}; {candidate.fund_code}")
     return True
+
+
+def transactions_for_candidate(session: Session, candidate: FundTransactionCandidate) -> list[FundTransaction]:
+    transactions = []
+    if candidate.id is not None:
+        transactions.extend(
+            session.exec(select(FundTransaction).where(FundTransaction.candidate_id == candidate.id)).all()
+        )
+    if candidate.confirmed_transaction_id:
+        linked = session.get(FundTransaction, candidate.confirmed_transaction_id)
+        if linked and all(tx.id != linked.id for tx in transactions):
+            transactions.append(linked)
+    matches = session.exec(
+        select(FundTransaction).where(
+            FundTransaction.fund_code == candidate.fund_code,
+            FundTransaction.trade_date == candidate.trade_date,
+            FundTransaction.action == candidate.action,
+            FundTransaction.source_file == candidate.source_file,
+        )
+    ).all()
+    for tx in matches:
+        if (
+            all(existing.id != tx.id for existing in transactions)
+            and _same_money_value(tx.amount_cny, candidate.amount_cny)
+            and _same_money_value(tx.share, candidate.share)
+        ):
+            transactions.append(tx)
+    return transactions
 
 
 def backfill_candidate_values(session: Session, candidate: FundTransactionCandidate) -> bool:
@@ -3945,22 +3976,6 @@ def transaction_delete(
     audit_log(session, "transaction.delete", "transaction", str(tx_id), detail)
     session.commit()
     return transactions_redirect_with_message(return_to, "流水已删除")
-
-
-@app.post("/holdings/update-platform")
-def update_fund_platform(
-    fund_code: str = Form(...),
-    platform: str = Form(""),
-    _: str = Depends(require_user),
-    session: Session = Depends(get_session),
-):
-    code = fund_code.zfill(6)
-    rule = session.get(FundRule, code) or FundRule(fund_code=code)
-    rule.platform = platform.strip()
-    rule.updated_at = datetime.utcnow()
-    session.add(rule)
-    session.commit()
-    return redirect(f"/holdings?message={code}+平台已改为+{platform.strip() or '未分类'}")
 
 
 @app.post("/holdings/update-platform")
