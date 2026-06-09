@@ -526,6 +526,36 @@ async def test_performance_page_draws_fund_and_benchmark_curves(client):
     assert "10.0%" in page.text
 
 
+async def test_aggregate_performance_chart_uses_return_not_market_value(client):
+    import app.db
+    from app.models import FundNav, FundTransaction, TransactionAction
+    from app.performance import build_aggregate_charts
+
+    await login(client)
+    with Session(app.db.engine) as session:
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹",
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=1000,
+                share=500,
+                nav=2.0,
+                fee=0,
+            )
+        )
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=2.0))
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 3), unit_nav=2.2))
+        session.commit()
+        charts = build_aggregate_charts(session)
+
+    total = next(chart for chart in charts if chart.fund_code == "TOTAL")
+    assert total.latest_return == pytest.approx(0.1)
+    assert total.fund_points[-1].value == pytest.approx(0.1)
+    assert all(abs(point.value) < 1 for point in total.fund_points)
+
+
 async def test_closed_position_moves_to_closed_section_and_skips_main_curve(client):
     import app.db
     from app.models import FundNav, FundTransaction, TransactionAction

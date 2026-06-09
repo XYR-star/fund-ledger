@@ -399,7 +399,6 @@ def build_aggregate_charts(session: Session) -> list[FundPerformanceChart]:
         if navs:
             all_navs[code] = navs
     
-    # 总体聚合
     overall_points = _aggregate_value_over_time(session, active_codes, all_navs)
     by_platform = {}
     for code in active_codes:
@@ -410,12 +409,7 @@ def build_aggregate_charts(session: Session) -> list[FundPerformanceChart]:
     charts = []
     # 总体
     if overall_points and len(overall_points) >= 2:
-        positions = calculate_position_summaries(session)
-        active = [p for p in positions if not p.is_closed]
-        total_cost = sum(p.cost for p in active)
-        total_market = sum(p.market_value for p in active)
-        latest_val = overall_points[-1].value
-        total_return = (total_market - total_cost) / total_cost if total_cost > 0 else 0
+        total_return = overall_points[-1].value
         benchmark_points = benchmark_points_for_range(session, overall_points[0].date, overall_points[-1].date)
         y_min, y_max = padded_range([p.value for p in overall_points + benchmark_points])
         charts.append(FundPerformanceChart(
@@ -437,8 +431,7 @@ def build_aggregate_charts(session: Session) -> list[FundPerformanceChart]:
         pf_points = _aggregate_value_over_time(session, pf_codes, all_navs)
         if not pf_points or len(pf_points) < 2:
             continue
-        pf_cost = sum(p.cost for p in active if p.fund_code in pf_codes)
-        pf_ret = (pf_points[-1].value - pf_cost) / pf_cost if pf_cost > 0 else 0
+        pf_ret = pf_points[-1].value
         bm_points = benchmark_points_for_range(session, pf_points[0].date, pf_points[-1].date)
         ymin, ymax = padded_range([p.value for p in pf_points + bm_points])
         charts.append(FundPerformanceChart(
@@ -465,24 +458,74 @@ def _aggregate_value_over_time(
     txs = session.exec(select(FundTransaction).where(
         FundTransaction.fund_code.in_(fund_codes)
     ).order_by(FundTransaction.trade_date, FundTransaction.id)).all()
-    date_values = {}
-    for code in fund_codes:
-        navs = all_navs.get(code, [])
-        shares_over_time = _holding_shares_over_time(
-            [t for t in txs if t.fund_code == code], [n.nav_date for n in navs]
+    nav_by_date = {
+        code: {nav.nav_date: nav.unit_nav for nav in navs}
+        for code, navs in all_navs.items()
+    }
+    dates = sorted({nav.nav_date for navs in all_navs.values() for nav in navs})
+    if not dates:
+        return []
+    state = {
+        code: {"share": 0.0, "cost": 0.0, "realized": 0.0, "total_buy": 0.0}
+        for code in fund_codes
+    }
+    latest_nav: dict[str, float] = {}
+    tx_idx = 0
+    txs_sorted = sorted(
+        txs,
+        key=lambda tx: (
+            tx.trade_date,
+            0 if tx.action in {TransactionAction.buy, TransactionAction.dividend_reinvest} else 1,
+            tx.id or 0,
+        ),
+    )
+    points: list[ChartPoint] = []
+    for current_date in dates:
+        for code, navs in nav_by_date.items():
+            if current_date in navs:
+                latest_nav[code] = navs[current_date]
+        while tx_idx < len(txs_sorted) and txs_sorted[tx_idx].trade_date <= current_date:
+            tx = txs_sorted[tx_idx]
+            item = state[tx.fund_code]
+            amount = tx.amount_cny or 0.0
+            fee = tx.fee or 0.0
+            if tx.action == TransactionAction.buy:
+                share = tx.share
+                if share is None and tx.nav:
+                    share = max((amount - fee) / tx.nav, 0.0)
+                item["share"] += share or 0.0
+                item["cost"] += amount + fee
+                item["total_buy"] += amount + fee
+            elif tx.action == TransactionAction.sell:
+                sell_share = tx.share or 0.0
+                old_share = item["share"]
+                cost_reduction = 0.0
+                if old_share > 0 and sell_share > 0:
+                    ratio = min(sell_share / old_share, 1.0)
+                    cost_reduction = item["cost"] * ratio
+                    item["cost"] -= cost_reduction
+                proceeds = amount or ((sell_share * tx.nav) if tx.nav else 0.0)
+                net_proceeds = max(proceeds - fee, 0.0)
+                item["realized"] += net_proceeds - cost_reduction
+                item["share"] = max(item["share"] - sell_share, 0.0)
+            elif tx.action == TransactionAction.dividend:
+                item["realized"] += amount
+            elif tx.action == TransactionAction.dividend_reinvest:
+                item["share"] += tx.share or 0.0
+                item["cost"] += amount
+                item["realized"] += amount
+            tx_idx += 1
+        total_buy = sum(item["total_buy"] for item in state.values())
+        if total_buy <= 0:
+            continue
+        market_value = sum(
+            item["share"] * latest_nav.get(code, 0.0)
+            for code, item in state.items()
         )
-        for n in navs:
-            shares = shares_over_time.get(n.nav_date, 0.0)
-            val = shares * n.unit_nav
-            date_values[n.nav_date] = date_values.get(n.nav_date, 0.0) + val
-    if not date_values:
-        return []
-    sorted_dates = sorted(date_values.keys())
-    points = [ChartPoint(d, date_values[d]) for d in sorted_dates if date_values[d] > 10]
-    if len(points) < 2:
-        return []
+        cost = sum(item["cost"] for item in state.values())
+        realized = sum(item["realized"] for item in state.values())
+        points.append(ChartPoint(current_date, (market_value - cost + realized) / total_buy))
     return points
-
 
 def _holding_shares_over_time(
     fund_txs: list[FundTransaction],
