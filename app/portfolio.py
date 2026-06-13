@@ -62,11 +62,13 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
                 "total_buy_amount": 0.0,
                 "total_sell_amount": 0.0,
                 "last_trade_date": None,
+                "last_action": tx.action,
             },
         )
         if tx.fund_name:
             item["fund_name"] = tx.fund_name
         item["last_trade_date"] = tx.trade_date
+        item["last_action"] = tx.action
         amount = tx.amount_cny or 0.0
         fee = tx.fee or 0.0
         share = tx.share
@@ -110,7 +112,11 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
         market_value = item["share"] * latest_nav if latest_nav else 0.0
         profit = market_value - item["cost"] if latest_nav else 0.0
         profit_rate = profit / item["cost"] if item["cost"] and latest_nav else None
-        is_closed = abs(item["share"]) < EPS_SHARE and abs(item["cost"]) < EPS_COST
+        is_closed = (
+            item["last_action"] == TransactionAction.sell
+            and abs(item["share"]) < EPS_SHARE
+            and abs(item["cost"]) < EPS_COST
+        )
         realized_profit_rate = (
             item["realized_profit"] / item["total_buy_amount"]
             if item["total_buy_amount"]

@@ -61,6 +61,9 @@ SIP_UPDATE_WORDS = ("修改定投", "变更定投")
 FORCED_ADJUST_WORDS = ("强制调增", "强制调减", "份额调增", "份额调减")
 TABLE_HEADER_WORDS = ("名称", "创建时间", "交易类型", "交易渠道", "份额", "金额", "状态")
 PLACEHOLDER_VALUES = {"", "-", "--", "—", "－", "无", "暂无"}
+POSITION_EPS_SHARE = 0.5
+POSITION_EPS_COST = 1.0
+POSITION_EPS_MARKET_VALUE = 1.0
 
 
 @app.on_event("startup")
@@ -1516,9 +1519,23 @@ def calculate_positions(session: Session, include_closed: bool = True) -> list[d
     for tx in txs:
         if tx.fund_code in money_or_etf:
             continue
-        item = grouped.setdefault(tx.fund_code, {"fund_code": tx.fund_code, "fund_name": tx.fund_name, "share": 0.0, "cost": 0.0, "realized_profit": 0.0, "last_trade_date": tx.trade_date})
+        item = grouped.setdefault(
+            tx.fund_code,
+            {
+                "fund_code": tx.fund_code,
+                "fund_name": tx.fund_name,
+                "share": 0.0,
+                "cost": 0.0,
+                "realized_profit": 0.0,
+                "last_trade_date": tx.trade_date,
+                "last_action": tx.action,
+                "incomplete_history": False,
+                "oversold_share": 0.0,
+            },
+        )
         item["fund_name"] = tx.fund_name or item["fund_name"]
         item["last_trade_date"] = tx.trade_date
+        item["last_action"] = tx.action
         amount = tx.amount_cny or 0.0
         fee = tx.fee or 0.0
         if tx.action == TransactionAction.buy:
@@ -1527,11 +1544,14 @@ def calculate_positions(session: Session, include_closed: bool = True) -> list[d
         elif tx.action == TransactionAction.sell:
             old_share = item["share"]
             sell_share = tx.share or 0
+            if sell_share > old_share + POSITION_EPS_SHARE:
+                item["incomplete_history"] = True
+                item["oversold_share"] += sell_share - max(old_share, 0.0)
             cost_reduction = item["cost"] * min(sell_share / old_share, 1.0) if old_share else 0
             item["cost"] -= cost_reduction
             item["share"] = max(item["share"] - sell_share, 0)
             item["realized_profit"] += max(amount, 0) - cost_reduction
-            if item["share"] < 0.0001:
+            if item["share"] < POSITION_EPS_SHARE and item["cost"] < POSITION_EPS_COST:
                 item["share"] = 0
                 item["cost"] = 0
         elif tx.action == TransactionAction.dividend:
@@ -1545,7 +1565,26 @@ def calculate_positions(session: Session, include_closed: bool = True) -> list[d
         latest_nav = nav.unit_nav if nav else None
         market = item["share"] * latest_nav if latest_nav else 0.0
         profit = market - item["cost"] if latest_nav else 0.0
-        is_closed = item["share"] < 0.0001
+        tiny_residual_after_sell = (
+            item["last_action"] == TransactionAction.sell
+            and market < POSITION_EPS_MARKET_VALUE
+            and item["cost"] < POSITION_EPS_COST
+        )
+        zeroed_by_sell = (
+            item["last_action"] == TransactionAction.sell
+            and item["share"] < POSITION_EPS_SHARE
+            and item["cost"] < POSITION_EPS_COST
+        )
+        is_closed = (
+            zeroed_by_sell
+            or tiny_residual_after_sell
+            or (item["incomplete_history"] and item["share"] < POSITION_EPS_SHARE)
+        )
+        if is_closed and tiny_residual_after_sell:
+            item["share"] = 0
+            item["cost"] = 0
+            market = 0.0
+            profit = 0.0
         if is_closed and not include_closed:
             continue
         positions.append({**item, "latest_nav": latest_nav, "nav_date": nav.nav_date if nav else None, "market_value": market, "profit": profit, "profit_rate": profit / item["cost"] if item["cost"] else None, "is_closed": is_closed})

@@ -552,6 +552,95 @@ def test_charts_page_shows_only_active_open_funds(app_ctx):
     assert 'href="/charts">曲线</a>' in nav.text
 
 
+def test_tiny_residual_after_sell_is_treated_as_closed(app_ctx):
+    main, db, _ = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 3), unit_nav=1.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.sell,
+                amount_cny=99.95,
+                share=99.95,
+                nav=1,
+            )
+        )
+        session.commit()
+
+        positions = main.calculate_positions(session)
+        assert positions[0]["is_closed"] is True
+        assert positions[0]["share"] == 0
+        assert main.calculate_positions(session, include_closed=False) == []
+
+
+def test_small_buy_without_sell_stays_active(app_ctx):
+    main, db, _ = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=1.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=0.1,
+                share=0.1,
+                nav=1,
+            )
+        )
+        session.commit()
+
+        positions = main.calculate_positions(session)
+        assert positions[0]["is_closed"] is False
+        assert positions[0]["share"] == 0.1
+
+
+def test_sell_without_prior_buy_is_marked_incomplete(app_ctx):
+    main, db, _ = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=1.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.sell,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.commit()
+
+        position = main.calculate_positions(session)[0]
+        assert position["is_closed"] is True
+        assert position["incomplete_history"] is True
+        assert position["oversold_share"] == 100
+
+
 def test_candidate_normalization_auto_syncs_missing_nav(app_ctx, monkeypatch):
     main, db, _ = app_ctx
     from app.models import FundNav, TransactionCandidate
