@@ -551,12 +551,19 @@ def candidate_update(
     candidate = session.get(TransactionCandidate, candidate_id)
     if not candidate:
         raise HTTPException(status_code=404)
+    posted_tx = session.get(FundTransaction, candidate.posted_transaction_id) if candidate.posted_transaction_id else None
+    old_tx_values = transaction_values(posted_tx)
     apply_candidate_form(candidate, fund_code, fund_name, fund_type, action, row_status, trade_date, submitted_at, amount_cny, share, nav, fee)
+    clear_stale_posted_calculations(candidate, posted_tx, old_tx_values)
     if candidate.fund_code and candidate.fund_name:
         upsert_alias(session, candidate.fund_name, candidate.fund_code, candidate.fund_name, candidate.fund_type, "manual")
     normalize_candidate_for_posting(session, candidate)
+    synced_posted_tx = sync_posted_transaction_from_candidate(session, candidate, posted_tx)
     session.add(candidate)
     session.commit()
+    if synced_posted_tx:
+        refresh_eaccount_reconciliations(session)
+        return redirect(f"/candidates?message=候选 #{candidate_id} 已同步流水和对账")
     return redirect(f"/candidates?message=候选 #{candidate_id} 已保存")
 
 
@@ -1772,6 +1779,90 @@ def post_candidate(session: Session, candidate: TransactionCandidate) -> FundTra
     candidate.updated_at = now_shanghai_naive()
     session.add(candidate)
     return tx
+
+
+def transaction_values(tx: FundTransaction | None) -> dict[str, float | date | time | str | TransactionAction | FundType | None]:
+    if not tx:
+        return {}
+    return {
+        "fund_code": tx.fund_code,
+        "fund_name": tx.fund_name,
+        "fund_type": tx.fund_type,
+        "trade_date": tx.trade_date,
+        "submitted_at": tx.submitted_at,
+        "effective_nav_date": tx.effective_nav_date,
+        "confirm_date": tx.confirm_date,
+        "action": tx.action,
+        "amount_cny": tx.amount_cny,
+        "share": tx.share,
+        "nav": tx.nav,
+        "fee": tx.fee,
+    }
+
+
+def same_optional_number(left: float | None, right: float | None, tolerance: float = 0.000001) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    return abs(left - right) <= tolerance
+
+
+def value_changed(current, previous) -> bool:
+    if isinstance(current, float) or isinstance(previous, float):
+        return not same_optional_number(current, previous)
+    return current != previous
+
+
+def clear_stale_posted_calculations(
+    candidate: TransactionCandidate,
+    posted_tx: FundTransaction | None,
+    old_tx_values: dict[str, float | date | time | str | TransactionAction | FundType | None],
+) -> None:
+    if not posted_tx:
+        return
+    amount_changed = value_changed(candidate.amount_cny, old_tx_values.get("amount_cny"))
+    share_changed = value_changed(candidate.share, old_tx_values.get("share"))
+    nav_changed = value_changed(candidate.nav, old_tx_values.get("nav"))
+    fee_unchanged = same_optional_number(candidate.fee, old_tx_values.get("fee"))  # type: ignore[arg-type]
+    share_unchanged = same_optional_number(candidate.share, old_tx_values.get("share"))  # type: ignore[arg-type]
+    amount_unchanged = same_optional_number(candidate.amount_cny, old_tx_values.get("amount_cny"))  # type: ignore[arg-type]
+    if candidate.action == TransactionAction.buy:
+        if (amount_changed or nav_changed) and share_unchanged:
+            candidate.share = None
+        if amount_changed and fee_unchanged:
+            candidate.fee = None
+    if candidate.action == TransactionAction.sell:
+        if (share_changed or nav_changed) and amount_unchanged:
+            candidate.amount_cny = None
+        if share_changed and fee_unchanged:
+            candidate.fee = None
+
+
+def sync_posted_transaction_from_candidate(
+    session: Session,
+    candidate: TransactionCandidate,
+    tx: FundTransaction | None,
+) -> bool:
+    if not tx or candidate.status != CandidateStatus.auto_ready or not candidate.action or not candidate.trade_date:
+        return False
+    tx.fund_code = candidate.fund_code
+    tx.fund_name = candidate.fund_name
+    tx.fund_type = candidate.fund_type
+    tx.trade_date = candidate.trade_date
+    tx.submitted_at = candidate.submitted_at
+    tx.effective_nav_date = candidate.effective_nav_date
+    tx.confirm_date = candidate.confirm_date
+    tx.action = candidate.action
+    tx.amount_cny = candidate.amount_cny
+    tx.share = candidate.share
+    tx.nav = candidate.nav
+    tx.fee = candidate.fee
+    tx.raw_text = candidate.raw_text
+    session.add(tx)
+    candidate.status = CandidateStatus.posted
+    candidate.posted_transaction_id = tx.id
+    candidate.updated_at = now_shanghai_naive()
+    session.add(candidate)
+    return True
 
 
 def find_matching_auto_dividend_transaction(session: Session, candidate: TransactionCandidate) -> FundTransaction | None:

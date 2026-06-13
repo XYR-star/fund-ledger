@@ -1942,6 +1942,81 @@ def test_candidates_page_renders_candidate_form(app_ctx):
     assert 'name="amount_cny" value="1000.0"' in response.text
 
 
+def test_updating_posted_buy_candidate_syncs_transaction_and_recomputes_share(app_ctx):
+    main, db, client = app_ctx
+    from app.models import FundNav, FundRule, FundTransaction, FundType, TransactionAction, TransactionCandidate
+
+    with Session(db.engine) as session:
+        rule = session.get(FundRule, "021457") or FundRule(fund_code="021457")
+        rule.fund_name = "易方达高股息"
+        rule.fund_type = FundType.open_fund
+        session.add(rule)
+        session.add(FundNav(fund_code="021457", nav_date=date(2026, 4, 22), unit_nav=1.2935))
+        candidate = TransactionCandidate(
+            fund_code="021457",
+            fund_name="易方达高股息",
+            fund_type=FundType.open_fund,
+            action=TransactionAction.buy,
+            row_status=main.RowStatus.success,
+            trade_date=date(2026, 4, 22),
+            effective_nav_date=date(2026, 4, 22),
+            amount_cny=50.40,
+            share=38.96,
+            nav=1.2935,
+            status=main.CandidateStatus.posted,
+        )
+        session.add(candidate)
+        session.flush()
+        tx = FundTransaction(
+            candidate_id=candidate.id,
+            fund_code="021457",
+            fund_name="易方达高股息",
+            fund_type=FundType.open_fund,
+            trade_date=date(2026, 4, 22),
+            effective_nav_date=date(2026, 4, 22),
+            action=TransactionAction.buy,
+            amount_cny=50.40,
+            share=38.96,
+            nav=1.2935,
+        )
+        session.add(tx)
+        session.flush()
+        candidate.posted_transaction_id = tx.id
+        session.add(candidate)
+        session.commit()
+        candidate_id = candidate.id
+        tx_id = tx.id
+
+    response = client.post(
+        f"/candidates/{candidate_id}/update",
+        data={
+            "fund_code": "021457",
+            "fund_name": "易方达高股息",
+            "fund_type": "open_fund",
+            "action": "buy",
+            "row_status": "success",
+            "trade_date": "2026-04-22",
+            "submitted_at": "",
+            "amount_cny": "50.19",
+            "share": "38.96",
+            "nav": "1.2935",
+            "fee": "0",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        candidate = session.get(TransactionCandidate, candidate_id)
+        tx = session.get(FundTransaction, tx_id)
+        assert candidate.status == main.CandidateStatus.posted
+        assert candidate.amount_cny == 50.19
+        assert candidate.share == 38.80
+        assert tx.amount_cny == 50.19
+        assert tx.share == 38.80
+        assert tx.nav == 1.2935
+
+
 def test_incomplete_candidate_cannot_be_force_posted(app_ctx):
     main, db, client = app_ctx
     from app.models import CandidateIssue, FundTransaction, TransactionCandidate
