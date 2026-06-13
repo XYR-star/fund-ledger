@@ -120,7 +120,7 @@ def root(_: str = Depends(require_user)):
 
 @app.get("/performance")
 def performance_redirect(_: str = Depends(require_user)):
-    return redirect("/holdings")
+    return redirect("/charts")
 
 
 @app.get("/portfolio")
@@ -568,6 +568,27 @@ def holdings_page(request: Request, _: str = Depends(require_user), session: Ses
         "holdings.html",
         {"request": request, "holdings": active, "closed": closed, "totals": totals},
     )
+
+
+@app.get("/charts", response_class=HTMLResponse)
+def charts_page(request: Request, _: str = Depends(require_user), session: Session = Depends(get_session)):
+    active_positions = [p for p in calculate_positions(session, include_closed=False) if not p["is_closed"]]
+    charts = []
+    for position in active_positions:
+        code = position["fund_code"]
+        txs = session.exec(
+            select(FundTransaction).where(FundTransaction.fund_code == code).order_by(FundTransaction.trade_date, FundTransaction.id)
+        ).all()
+        navs = session.exec(select(FundNav).where(FundNav.fund_code == code).order_by(FundNav.nav_date)).all()
+        charts.append(
+            {
+                "fund_code": code,
+                "fund_name": position["fund_name"],
+                "position": position,
+                "chart": build_fund_chart(txs, navs),
+            }
+        )
+    return templates.TemplateResponse("charts.html", {"request": request, "charts": charts})
 
 
 @app.get("/funds/{fund_code}", response_class=HTMLResponse)

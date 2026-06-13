@@ -497,6 +497,61 @@ def test_transactions_page_includes_dividend_method_events(app_ctx):
     assert "事件" in response.text
 
 
+def test_charts_page_shows_only_active_open_funds(app_ctx):
+    main, db, client = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=1.0))
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 3), unit_nav=1.2))
+        session.add(FundNav(fund_code="000001", nav_date=date(2024, 1, 2), unit_nav=1.0))
+        session.add(FundNav(fund_code="000001", nav_date=date(2024, 1, 3), unit_nav=1.1))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="000001",
+                fund_name="已清仓基金",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="000001",
+                fund_name="已清仓基金",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.sell,
+                amount_cny=110,
+                share=100,
+                nav=1.1,
+            )
+        )
+        session.commit()
+
+    response = client.get("/charts")
+    assert response.status_code == 200
+    assert "易方达蓝筹精选混合 005827" in response.text
+    assert "已清仓基金" not in response.text
+    nav = client.get("/holdings")
+    assert 'href="/charts">曲线</a>' in nav.text
+
+
 def test_candidate_normalization_auto_syncs_missing_nav(app_ctx, monkeypatch):
     main, db, _ = app_ctx
     from app.models import FundNav, TransactionCandidate
@@ -645,7 +700,7 @@ def test_import_delete_removes_document_rows_and_candidates(app_ctx, tmp_path):
 def test_core_pages_render(app_ctx):
     _, _, client = app_ctx
 
-    for path in ["/candidates", "/imports", "/upload", "/transactions", "/events", "/holdings", "/funds", "/settings"]:
+    for path in ["/candidates", "/imports", "/upload", "/transactions", "/events", "/holdings", "/charts", "/funds", "/settings"]:
         response = client.get(path)
         assert response.status_code == 200, path
 
