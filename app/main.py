@@ -67,6 +67,7 @@ POSITION_EPS_SHARE = 0.5
 POSITION_EPS_COST = 1.0
 POSITION_EPS_MARKET_VALUE = 1.0
 NAV_SYNC_POLL_SECONDS = 60
+NAV_SYNC_INCREMENTAL_PZ = 60
 _nav_sync_task: asyncio.Task | None = None
 
 
@@ -770,13 +771,20 @@ def should_run_daily_nav_sync(now: datetime | None = None, config: dict[str, str
 def sync_active_fund_navs_once() -> dict[str, int]:
     with Session(engine) as session:
         config = runtime_settings(session)
-        pz = int(normalize_nav_sync_pz(config.get("NAV_SYNC_PZ", "")) or "40000")
+        full_pz = int(normalize_nav_sync_pz(config.get("NAV_SYNC_PZ", "")) or "40000")
         codes = active_open_fund_codes_for_nav_sync(session)
         inserted = 0
         succeeded = 0
         failed = 0
+        incremental = 0
+        full = 0
         errors = []
         for code in codes:
+            pz = nav_sync_pz_for_fund(session, code, full_pz)
+            if pz == full_pz:
+                full += 1
+            else:
+                incremental += 1
             count, error = sync_nav_for_fund(session, code, pz=pz)
             if error:
                 failed += 1
@@ -785,7 +793,7 @@ def sync_active_fund_navs_once() -> dict[str, int]:
                 succeeded += 1
                 inserted += count
         now = datetime.now(BUSINESS_TIMEZONE)
-        summary = f"成功 {succeeded} 个，失败 {failed} 个，新增 {inserted} 条"
+        summary = f"成功 {succeeded} 个，失败 {failed} 个，新增 {inserted} 条，增量 {incremental} 个，历史 {full} 个"
         if errors:
             summary = f"{summary}；" + "；".join(errors[:5])
         save_settings(
@@ -823,6 +831,15 @@ def active_open_fund_codes_for_nav_sync(session: Session) -> list[str]:
         if rule_types.get(code, FundType.open_fund) == FundType.open_fund:
             codes.append(code)
     return sorted(set(codes))
+
+
+def nav_sync_pz_for_fund(session: Session, fund_code: str, full_pz: int) -> int:
+    latest = session.exec(
+        select(FundNav).where(FundNav.fund_code == fund_code).order_by(desc(FundNav.nav_date))
+    ).first()
+    if latest is None:
+        return full_pz
+    return NAV_SYNC_INCREMENTAL_PZ
 
 
 def normalize_nav_sync_time(value: str) -> str:

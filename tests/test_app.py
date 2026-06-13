@@ -919,7 +919,7 @@ def test_nav_sync_settings_are_saved(app_ctx):
 def test_manual_nav_sync_updates_active_open_funds_only(app_ctx, monkeypatch):
     main, db, client = app_ctx
     from app.app_settings import runtime_settings
-    from app.models import FundRule, FundTransaction, FundType, TransactionAction
+    from app.models import FundAlias, FundRule, FundTransaction, FundType, TransactionAction
 
     synced = []
 
@@ -930,12 +930,26 @@ def test_manual_nav_sync_updates_active_open_funds_only(app_ctx, monkeypatch):
     monkeypatch.setattr(main, "sync_nav_for_fund", fake_sync)
     with Session(db.engine) as session:
         seed_open_fund(session, main, code="005827", name="活跃基金")
+        session.add(FundAlias(keyword="新基金", fund_code="006000", fund_name="新基金", fund_type=FundType.open_fund, source="test"))
+        session.add(FundRule(fund_code="006000", fund_name="新基金", fund_type=FundType.open_fund))
         seed_open_fund(session, main, code="000001", name="已清仓基金")
         session.add(FundRule(fund_code="510300", fund_name="ETF", fund_type=FundType.etf))
         session.add(
             FundTransaction(
                 fund_code="005827",
                 fund_name="活跃基金",
+                fund_type=FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="006000",
+                fund_name="新基金",
                 fund_type=FundType.open_fund,
                 trade_date=date(2024, 1, 2),
                 action=TransactionAction.buy,
@@ -984,11 +998,12 @@ def test_manual_nav_sync_updates_active_open_funds_only(app_ctx, monkeypatch):
 
     response = client.post("/settings/nav-sync-now", follow_redirects=False)
     assert response.status_code == 303
-    assert synced == [("005827", 40000)]
+    assert synced == [("005827", 60), ("006000", 40000)]
     with Session(db.engine) as session:
         config = runtime_settings(session)
         assert config["NAV_SYNC_LAST_RUN_AT"]
-        assert "成功 1 个" in config["NAV_SYNC_LAST_RESULT"]
+        assert "成功 2 个" in config["NAV_SYNC_LAST_RESULT"]
+        assert "增量 1 个，历史 1 个" in config["NAV_SYNC_LAST_RESULT"]
 
 
 def test_daily_nav_sync_runs_once_after_shanghai_time(app_ctx):

@@ -14,8 +14,9 @@
     <label><span><input type="checkbox" name="nav_sync_enabled" {% if config.NAV_SYNC_ENABLED in [true, "true", "True", "1"] %}checked{% endif %} style="width:auto"> 每日自动同步活跃场外基金净值</span></label>
     <div class="form-grid">
       <label>每日同步时间（上海）<input type="time" name="nav_sync_time" value="{{ config.NAV_SYNC_TIME or '18:30' }}"></label>
-      <label>每只基金拉取条数<input type="number" min="200" max="50000" step="100" name="nav_sync_pz" value="{{ config.NAV_SYNC_PZ or '40000' }}"></label>
+      <label>新基金历史拉取条数<input type="number" min="200" max="50000" step="100" name="nav_sync_pz" value="{{ config.NAV_SYNC_PZ or '40000' }}"></label>
     </div>
+    <p class="muted">已有净值历史的基金每日只拉最近 60 条；新买入或无历史净值的基金才按上面的条数补历史。</p>
     <p class="muted">
       上次同步：
       {% if config.NAV_SYNC_LAST_RUN_AT %}{{ config.NAV_SYNC_LAST_RUN_AT }}{% else %}尚未运行{% endif %}
