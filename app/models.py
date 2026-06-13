@@ -220,7 +220,6 @@ class EAccountHolding(SQLModel, table=True):
     import_id: int = Field(index=True)
     fund_code: str = Field(default="", index=True, max_length=6)
     fund_name: str = ""
-    manager: str = ""
     fund_account: str = ""
     official_share: Optional[float] = None
     share_date: Optional[date] = None

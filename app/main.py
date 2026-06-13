@@ -1155,7 +1155,6 @@ def normalize_eaccount_row(item: dict) -> dict:
     return {
         "fund_code": code,
         "fund_name": normalized_cell(pick("基金名称", "名称", "fund_name")),
-        "manager": normalized_cell(pick("基金管理人", "管理人")),
         "fund_account": normalized_cell(pick("基金账户")),
         "official_share": parse_float_cell(str(pick("持有份额", "份额", "当前份额"))),
         "share_date": coerce_date(pick("份额日期", "持有日期")),
@@ -1191,7 +1190,6 @@ def build_eaccount_holding(import_id: int, row: dict, positions: dict[str, dict]
         import_id=import_id,
         fund_code=code,
         fund_name=row.get("fund_name") or (local["fund_name"] if local else ""),
-        manager=row.get("manager") or "",
         fund_account=row.get("fund_account") or "",
         official_share=official_share,
         share_date=row.get("share_date"),
