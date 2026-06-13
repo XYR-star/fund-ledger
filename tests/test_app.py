@@ -1827,8 +1827,8 @@ def test_pasted_manual_transaction_parses_code_and_amount_immediately(app_ctx):
         session.commit()
 
     response = client.post(
-        "/upload",
-        data={"raw_text": "2026-4-22 21:18 买入 021457 50.44"},
+        "/manual-import",
+        data={"manual_text": "2026-4-22 21:18 买入 021457 50.44"},
         follow_redirects=False,
     )
     assert response.status_code == 303
@@ -1844,6 +1844,19 @@ def test_pasted_manual_transaction_parses_code_and_amount_immediately(app_ctx):
         assert candidate.trade_date == date(2026, 4, 22)
         assert candidate.amount_cny == 50.44
         assert candidate.row_status == main.RowStatus.success
+
+
+def test_upload_page_keeps_manual_template_visible(app_ctx):
+    _, _, client = app_ctx
+
+    response = client.get("/upload")
+
+    assert response.status_code == 200
+    assert 'action="/manual-import"' in response.text
+    assert 'name="manual_text"' in response.text
+    assert "买入：2026-04-22 21:18 买入 021457 50.44" in response.text
+    assert "卖出：2026-04-22 21:18 卖出 021457 38.99" in response.text
+    assert "placeholder=" not in response.text
 
 
 def test_candidates_page_renders_candidate_form(app_ctx):

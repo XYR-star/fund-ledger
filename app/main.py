@@ -242,8 +242,8 @@ async def eaccount_import(
 
 
 @app.get("/upload", response_class=HTMLResponse)
-def upload_page(request: Request, _: str = Depends(require_user)):
-    return templates.TemplateResponse("upload.html", {"request": request})
+def upload_page(request: Request, message: str = "", _: str = Depends(require_user)):
+    return templates.TemplateResponse("upload.html", {"request": request, "message": message})
 
 
 @app.post("/upload")
@@ -263,22 +263,29 @@ def upload_submit(
         doc = save_upload_document(session, upload)
         documents.append(doc)
     if raw_text.strip():
-        doc = ImportDocument(
-            file_name="粘贴文本",
-            source_hash=_hash_content(raw_text.encode()),
-            ocr_text=raw_text,
-            status=ImportStatus.ocr_done,
-        )
-        session.add(doc)
-        session.flush()
-        save_ocr_rows(session, doc, [[line] for line in raw_text.splitlines() if line.strip()])
-        parse_document_candidates(session, doc.id)
-        documents.append(doc)
+        doc = create_manual_import_document(session, raw_text)
+        if doc:
+            documents.append(doc)
     session.commit()
     if len(documents) == 1:
         session.refresh(documents[0])
         return redirect(f"/imports/{documents[0].id}")
     return redirect(f"/imports?message=已上传 {len(documents)} 个导入")
+
+
+@app.post("/manual-import")
+def manual_import_submit(
+    manual_text: str = Form(""),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    ensure_data_dirs()
+    doc = create_manual_import_document(session, manual_text)
+    if not doc:
+        return redirect("/upload?message=请输入手动流水")
+    session.commit()
+    session.refresh(doc)
+    return redirect(f"/imports/{doc.id}")
 
 
 @app.post("/upload/single")
@@ -1430,6 +1437,23 @@ def save_upload_document(session: Session, upload: UploadFile) -> ImportDocument
         status=ImportStatus.uploaded,
     )
     session.add(doc)
+    return doc
+
+
+def create_manual_import_document(session: Session, text: str) -> ImportDocument | None:
+    normalized = text.strip()
+    if not normalized:
+        return None
+    doc = ImportDocument(
+        file_name="手动录入",
+        source_hash=_hash_content(normalized.encode()),
+        ocr_text=normalized,
+        status=ImportStatus.ocr_done,
+    )
+    session.add(doc)
+    session.flush()
+    save_ocr_rows(session, doc, [[line] for line in normalized.splitlines() if line.strip()])
+    parse_document_candidates(session, doc.id)
     return doc
 
 

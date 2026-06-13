@@ -3,21 +3,21 @@
 {% block content %}
 <div class="page-title">
   <div>
-    <h1>上传截图</h1>
-    <p class="muted">截图走百度表格 OCR；粘贴文本可用于临时调试。</p>
+    <h1>新增记录</h1>
+    <p class="muted">截图走百度表格 OCR；手动录入走简化解析，两条路径互不影响。</p>
   </div>
 </div>
 
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+
 <section class="panel stack">
+  <h2>上传截图</h2>
   <form id="upload-form" class="stack" method="post" action="/upload" enctype="multipart/form-data">
     <label>基金公司官网截图
       <input id="file-input" type="file" name="files" accept="image/*" multiple>
     </label>
-    <label>OCR 文本
-      <textarea name="raw_text" placeholder="2024-01-02 14:30:00 成功 易方达蓝筹精选混合 买入 金额1000元"></textarea>
-    </label>
     <div class="actions">
-      <button class="btn primary" type="submit">上传</button>
+      <button class="btn primary" type="submit">上传截图</button>
       <a class="btn" href="/imports">导入列表</a>
     </div>
   </form>
@@ -30,6 +30,26 @@
     <div id="upload-progress-log" class="sample"></div>
   </div>
 </section>
+
+<section class="panel stack">
+  <h2>手动录入</h2>
+  <div class="sample">
+买入：2026-04-22 21:18 买入 021457 50.44
+卖出：2026-04-22 21:18 卖出 021457 38.99
+转换/转出：2026-04-22 21:18 转换 021457 38.99
+红利再投资：2026-06-09 红利再投资 010391 1.01
+现金分红：2026-06-09 现金分红 010391 1.01
+  </div>
+  <form class="stack" method="post" action="/manual-import">
+    <label>手动流水
+      <textarea name="manual_text"></textarea>
+    </label>
+    <div class="actions">
+      <button class="btn primary" type="submit">保存手动记录</button>
+    </div>
+  </form>
+</section>
+
 <script>
   (() => {
     const form = document.querySelector("#upload-form");
@@ -42,8 +62,7 @@
 
     form?.addEventListener("submit", async (event) => {
       const files = Array.from(input?.files || []);
-      const rawText = form.querySelector("textarea[name='raw_text']")?.value?.trim();
-      if (rawText || files.length <= 1) return;
+      if (files.length <= 1) return;
       event.preventDefault();
       box.classList.remove("hidden");
       form.querySelector("button[type='submit']").disabled = true;
