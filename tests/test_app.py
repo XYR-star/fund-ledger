@@ -836,6 +836,7 @@ def test_sync_public_dividend_reinvests_once_and_skips_duplicates(app_ctx, monke
                     "fund_code": "005827",
                     "fund_name": "易方达蓝筹精选混合",
                     "register_date": date(2024, 1, 10),
+                    "pay_date": date(2024, 1, 11),
                     "dividend_per_share": 0.1,
                 }
             ],
@@ -849,6 +850,7 @@ def test_sync_public_dividend_reinvests_once_and_skips_duplicates(app_ctx, monke
         assert tx.share == 5.0
         assert tx.amount_cny is None
         assert tx.nav == 2.0
+        assert tx.trade_date == date(2024, 1, 11)
 
         result = main.sync_active_fund_dividends(session, years=[2024])
         assert result["posted"] == 0
@@ -886,6 +888,7 @@ def test_sync_public_dividend_uses_cash_when_rule_says_cash(app_ctx, monkeypatch
                     "fund_code": "005827",
                     "fund_name": "易方达蓝筹精选混合",
                     "register_date": date(2024, 1, 10),
+                    "pay_date": date(2024, 1, 11),
                     "dividend_per_share": 0.1,
                 }
             ],
@@ -898,6 +901,136 @@ def test_sync_public_dividend_uses_cash_when_rule_says_cash(app_ctx, monkeypatch
         assert tx.source_file == "auto_dividend_sync"
         assert tx.amount_cny == 10.0
         assert tx.share is None
+        assert tx.trade_date == date(2024, 1, 11)
+
+
+def test_sync_public_dividend_only_posts_after_latest_imported_transaction(app_ctx, monkeypatch):
+    main, db, _ = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 6, 10), unit_nav=2.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 3, 16),
+                action=TransactionAction.dividend,
+                amount_cny=10,
+                raw_text="现金分红 已导入",
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 5, 31),
+                action=TransactionAction.buy,
+                amount_cny=20,
+                share=10,
+                nav=2,
+                raw_text="五月底导入流水",
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(
+            main,
+            "fetch_public_dividend_rows",
+            lambda years: [
+                {
+                    "fund_code": "005827",
+                    "fund_name": "易方达蓝筹精选混合",
+                    "register_date": date(2024, 3, 13),
+                    "pay_date": date(2024, 3, 16),
+                    "dividend_per_share": 0.1,
+                },
+                {
+                    "fund_code": "005827",
+                    "fund_name": "易方达蓝筹精选混合",
+                    "register_date": date(2024, 6, 8),
+                    "pay_date": date(2024, 6, 9),
+                    "dividend_per_share": 0.1,
+                },
+            ],
+        )
+
+        result = main.sync_active_fund_dividends(session, years=[2024])
+        assert result["posted"] == 1
+
+        auto_txs = session.exec(select(FundTransaction).where(FundTransaction.source_file == "auto_dividend_sync")).all()
+        assert len(auto_txs) == 1
+        assert auto_txs[0].trade_date == date(2024, 6, 9)
+        assert auto_txs[0].action == TransactionAction.dividend_reinvest
+        assert auto_txs[0].share == 5.5
+
+
+def test_sync_public_dividend_skips_existing_auto_row_on_register_date(app_ctx, monkeypatch):
+    main, db, _ = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 6, 8), unit_nav=2.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 5, 31),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 6, 8),
+                action=TransactionAction.dividend_reinvest,
+                share=5,
+                nav=2,
+                source_file="auto_dividend_sync",
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(
+            main,
+            "fetch_public_dividend_rows",
+            lambda years: [
+                {
+                    "fund_code": "005827",
+                    "fund_name": "易方达蓝筹精选混合",
+                    "register_date": date(2024, 6, 8),
+                    "pay_date": date(2024, 6, 9),
+                    "dividend_per_share": 0.1,
+                }
+            ],
+        )
+
+        result = main.sync_active_fund_dividends(session, years=[2024])
+        assert result["posted"] == 0
+        auto_txs = session.exec(select(FundTransaction).where(FundTransaction.source_file == "auto_dividend_sync")).all()
+        assert len(auto_txs) == 1
 
 
 def test_later_ocr_dividend_matching_auto_sync_is_ignored(app_ctx):

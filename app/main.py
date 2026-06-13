@@ -943,8 +943,13 @@ def sync_active_fund_dividends(session: Session, years: list[int] | None = None)
             skipped += 1
             continue
         register_date = row.get("register_date")
+        pay_date = row.get("pay_date") or register_date
         per_share = row.get("dividend_per_share")
-        if not register_date or per_share is None:
+        if not register_date or not pay_date or per_share is None:
+            skipped += 1
+            continue
+        latest_imported_date = latest_user_transaction_date(session, code)
+        if latest_imported_date and pay_date <= latest_imported_date:
             skipped += 1
             continue
         rule = rules.get(code)
@@ -952,7 +957,7 @@ def sync_active_fund_dividends(session: Session, years: list[int] | None = None)
         if method is None:
             skipped += 1
             continue
-        if existing_auto_dividend_transaction(session, code, register_date, method):
+        if existing_auto_dividend_transaction(session, code, pay_date, method) or existing_auto_dividend_transaction(session, code, register_date, method):
             skipped += 1
             continue
         held_share = fund_share_on_date(session, code, register_date)
@@ -977,7 +982,7 @@ def sync_active_fund_dividends(session: Session, years: list[int] | None = None)
             fund_code=code,
             fund_name=fund_name,
             fund_type=FundType.open_fund,
-            trade_date=register_date,
+            trade_date=pay_date,
             effective_nav_date=nav.nav_date if nav else register_date,
             confirm_date=nav.nav_date if nav else register_date,
             action=method,
@@ -985,12 +990,24 @@ def sync_active_fund_dividends(session: Session, years: list[int] | None = None)
             share=share,
             nav=nav.unit_nav if nav else None,
             source_file="auto_dividend_sync",
-            raw_text=f"系统分红同步 {code} {fund_name} {register_date} 每份分红 {per_share}",
+            raw_text=f"系统分红同步 {code} {fund_name} 权益登记 {register_date} 发放 {pay_date} 每份分红 {per_share}",
         )
         session.add(tx)
         posted += 1
     session.commit()
     return {"posted": posted, "skipped": skipped, "errors": errors}
+
+
+def latest_user_transaction_date(session: Session, code: str) -> date | None:
+    tx = session.exec(
+        select(FundTransaction)
+        .where(
+            FundTransaction.fund_code == code,
+            (FundTransaction.source_file.is_(None)) | (FundTransaction.source_file != "auto_dividend_sync"),
+        )
+        .order_by(desc(FundTransaction.trade_date), desc(FundTransaction.id))
+    ).first()
+    return tx.trade_date if tx else None
 
 
 def fetch_public_dividend_rows(years: list[int]) -> list[dict]:
