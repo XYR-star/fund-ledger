@@ -81,6 +81,7 @@ def on_startup() -> None:
     ensure_data_dirs()
     init_db()
     with Session(engine) as session:
+        reset_background_job_flags(session)
         seed_aliases_from_fund_map(session)
 
 
@@ -104,6 +105,10 @@ async def stop_nav_sync_scheduler() -> None:
 
 def redirect(path: str) -> RedirectResponse:
     return RedirectResponse(path, status_code=HTTP_303_SEE_OTHER)
+
+
+def reset_background_job_flags(session: Session) -> None:
+    save_settings(session, {"DIVIDEND_SYNC_RUNNING": "false"})
 
 
 def require_user(request: Request) -> str:
@@ -783,11 +788,21 @@ def fund_nav_sync(fund_code: str, _: str = Depends(require_user), session: Sessi
 
 
 @app.post("/dividends/sync")
-def dividend_sync(_: str = Depends(require_user)):
-    result = sync_active_fund_dividends_once()
-    if result["errors"]:
-        return redirect(f"/holdings?message=分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条，错误 {len(result['errors'])} 个")
-    return redirect(f"/holdings?message=分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条")
+async def dividend_sync(_: str = Depends(require_user), session: Session = Depends(get_session)):
+    config = runtime_settings(session)
+    if config.get("DIVIDEND_SYNC_RUNNING") == "true":
+        return redirect("/holdings?message=分红同步已在后台运行，请稍后刷新")
+    now = datetime.now(BUSINESS_TIMEZONE)
+    save_settings(
+        session,
+        {
+            "DIVIDEND_SYNC_RUNNING": "true",
+            "DIVIDEND_SYNC_LAST_RUN_AT": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "DIVIDEND_SYNC_LAST_RESULT": "同步中",
+        },
+    )
+    asyncio.create_task(asyncio.to_thread(run_dividend_sync_background))
+    return redirect("/holdings?message=分红同步已开始，稍后刷新持仓页查看结果")
 
 
 @app.post("/settings/nav-sync-now")
@@ -923,6 +938,26 @@ def sync_active_fund_navs_once() -> dict[str, int]:
 def sync_active_fund_dividends_once() -> dict:
     with Session(engine) as session:
         return sync_active_fund_dividends(session)
+
+
+def run_dividend_sync_background() -> None:
+    with Session(engine) as session:
+        try:
+            result = sync_active_fund_dividends(session)
+            if result["errors"]:
+                summary = f"分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条，错误 {len(result['errors'])} 个"
+            else:
+                summary = f"分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条"
+        except Exception as exc:
+            summary = f"分红同步失败: {exc}"
+        save_settings(
+            session,
+            {
+                "DIVIDEND_SYNC_RUNNING": "false",
+                "DIVIDEND_SYNC_LAST_RESULT": summary,
+                "DIVIDEND_SYNC_LAST_FINISHED_AT": datetime.now(BUSINESS_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
 
 
 def sync_active_fund_dividends(session: Session, years: list[int] | None = None) -> dict:

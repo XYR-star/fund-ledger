@@ -1033,6 +1033,35 @@ def test_sync_public_dividend_skips_existing_auto_row_on_register_date(app_ctx, 
         assert len(auto_txs) == 1
 
 
+def test_dividend_sync_route_starts_background_job_without_inline_sync(app_ctx, monkeypatch):
+    main, db, client = app_ctx
+    from app.app_settings import runtime_settings
+
+    scheduled = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return object()
+
+    monkeypatch.setattr(main.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(
+        main,
+        "run_dividend_sync_background",
+        lambda: (_ for _ in ()).throw(AssertionError("should run in background")),
+    )
+
+    response = client.post("/dividends/sync", follow_redirects=False)
+    assert response.status_code == 303
+    assert "message=" in response.headers["location"]
+    assert scheduled
+
+    with Session(db.engine) as session:
+        config = runtime_settings(session)
+        assert config["DIVIDEND_SYNC_RUNNING"] == "true"
+        assert config["DIVIDEND_SYNC_LAST_RESULT"] == "同步中"
+
+
 def test_later_ocr_dividend_matching_auto_sync_is_ignored(app_ctx):
     main, db, _ = app_ctx
     from app.models import CandidateStatus, FundTransaction, TransactionAction, TransactionCandidate

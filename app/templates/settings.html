@@ -27,6 +27,11 @@
       {% if config.NAV_SYNC_LAST_RUN_AT %}{{ config.NAV_SYNC_LAST_RUN_AT }}{% else %}尚未运行{% endif %}
       {% if config.NAV_SYNC_LAST_RESULT %}；{{ config.NAV_SYNC_LAST_RESULT }}{% endif %}
     </p>
+    <p class="muted">
+      上次分红同步：
+      {% if config.DIVIDEND_SYNC_LAST_RUN_AT %}{{ config.DIVIDEND_SYNC_LAST_RUN_AT }}{% else %}尚未运行{% endif %}
+      {% if config.DIVIDEND_SYNC_RUNNING == "true" %}；同步中{% elif config.DIVIDEND_SYNC_LAST_RESULT %}；{{ config.DIVIDEND_SYNC_LAST_RESULT }}{% endif %}
+    </p>
     <button class="btn primary" type="submit">保存净值同步设置</button>
   </form>
 </section>
