@@ -1063,6 +1063,60 @@ def test_eaccount_import_marks_mismatched_holdings(app_ctx):
         assert "份额差异" in holding.issue_summary
 
 
+def test_eaccount_import_reconciles_against_snapshot_date_not_current_position(app_ctx):
+    main, db, client = app_ctx
+    from app.models import EAccountHolding, FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 6), unit_nav=3.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 5),
+                action=TransactionAction.sell,
+                amount_cny=150,
+                share=50,
+                nav=3,
+            )
+        )
+        session.commit()
+
+    csv = "\n".join(
+        [
+            "基金代码,基金名称,持有份额,份额日期,基金净值,净值日期,结算市值",
+            "005827,易方达蓝筹精选混合,100.00,2024-01-04,2.50,2024-01-04,250.00",
+        ]
+    )
+    response = client.post(
+        "/eaccount/import",
+        files={"file": ("snapshot.csv", csv.encode("utf-8"), "text/csv")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        holding = session.exec(select(EAccountHolding)).one()
+        assert holding.status == "matched"
+        assert holding.local_share == 100
+        assert holding.local_market_value == 250
+        assert holding.share_diff == 0
+
+
 def test_eaccount_versions_keep_each_import_and_can_be_reopened(app_ctx):
     main, db, client = app_ctx
     from app.models import EAccountImport, FundTransaction, TransactionAction

@@ -1122,9 +1122,16 @@ def import_eaccount_holdings(session: Session, file_name: str, content: bytes) -
     imported = EAccountImport(file_name=file_name, source_hash=_hash_content(content), row_count=len(rows))
     session.add(imported)
     session.flush()
-    positions = {p["fund_code"]: p for p in calculate_positions(session, include_closed=False)}
+    positions_by_date: dict[date | None, dict[str, dict]] = {}
     matched = mismatch = missing = 0
     for row in rows:
+        snapshot_date = row.get("share_date") or row.get("nav_date")
+        if snapshot_date not in positions_by_date:
+            positions_by_date[snapshot_date] = {
+                p["fund_code"]: p
+                for p in calculate_positions(session, include_closed=False, as_of=snapshot_date)
+            }
+        positions = positions_by_date[snapshot_date]
         holding = build_eaccount_holding(imported.id, row, positions)
         if holding.status == "matched":
             matched += 1
@@ -1196,7 +1203,10 @@ def build_eaccount_holding(import_id: int, row: dict, positions: dict[str, dict]
     code = row.get("fund_code") or ""
     local = positions.get(code)
     local_share = local["share"] if local else None
-    local_market = local["market_value"] if local else None
+    if local_share is not None and row.get("nav") is not None:
+        local_market = round_money(local_share * row["nav"])
+    else:
+        local_market = local["market_value"] if local else None
     official_share = row.get("official_share")
     official_market = row.get("settlement_value") if row.get("settlement_value") is not None else row.get("official_market_value")
     share_diff = round_money((official_share or 0) - (local_share or 0)) if official_share is not None and local_share is not None else None
@@ -2110,8 +2120,11 @@ def round_fund_share(value: float) -> float:
     return round_half_up(value, FUND_SHARE_DECIMALS)
 
 
-def calculate_positions(session: Session, include_closed: bool = True) -> list[dict]:
-    txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)).all()
+def calculate_positions(session: Session, include_closed: bool = True, as_of: date | None = None) -> list[dict]:
+    query = select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)
+    if as_of:
+        query = query.where(FundTransaction.trade_date <= as_of)
+    txs = session.exec(query).all()
     money_or_etf = {r.fund_code for r in session.exec(select(FundRule)).all() if r.fund_type in {FundType.etf, FundType.money_fund}}
     grouped: dict[str, dict] = {}
     for tx in txs:
@@ -2159,7 +2172,7 @@ def calculate_positions(session: Session, include_closed: bool = True) -> list[d
         elif tx.action == TransactionAction.dividend_reinvest:
             reinvest_share = tx.share or 0
             item["share"] += reinvest_share
-    latest = latest_navs(session, set(grouped))
+    latest = latest_navs(session, set(grouped), as_of=as_of)
     positions = []
     for code, item in grouped.items():
         nav = latest.get(code)
@@ -2194,10 +2207,13 @@ def calculate_positions(session: Session, include_closed: bool = True) -> list[d
     return sorted(positions, key=lambda p: (p["is_closed"], -p["market_value"], p["fund_code"]))
 
 
-def latest_navs(session: Session, codes: set[str]) -> dict[str, FundNav]:
+def latest_navs(session: Session, codes: set[str], as_of: date | None = None) -> dict[str, FundNav]:
     result = {}
     for code in codes:
-        nav = session.exec(select(FundNav).where(FundNav.fund_code == code).order_by(desc(FundNav.nav_date))).first()
+        query = select(FundNav).where(FundNav.fund_code == code)
+        if as_of:
+            query = query.where(FundNav.nav_date <= as_of)
+        nav = session.exec(query.order_by(desc(FundNav.nav_date))).first()
         if nav:
             result[code] = nav
     return result
