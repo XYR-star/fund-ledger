@@ -168,6 +168,10 @@ textarea { min-height: 180px; resize: vertical; }
 label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .form-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; align-items: end; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.rule-classify-form, .rule-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.rule-classify-form input { width: 96px; }
+.rule-classify-form select { width: 132px; }
+.rule-actions { flex-direction: column; align-items: flex-start; }
 .badge {
   display: inline-flex;
   border-radius: 999px;

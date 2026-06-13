@@ -1109,6 +1109,16 @@ def test_core_pages_render(app_ctx):
         assert response.status_code == 200, path
 
 
+def test_funds_rules_table_keeps_table_cells_for_aligned_borders(app_ctx):
+    _, _, client = app_ctx
+
+    response = client.get("/funds")
+    assert response.status_code == 200
+    assert '<td class="actions">' not in response.text
+    assert 'class="rule-actions"' in response.text
+    assert 'class="rule-classify-form"' in response.text
+
+
 def test_single_upload_endpoint_creates_document(app_ctx):
     _, db, client = app_ctx
     from app.models import ImportDocument
