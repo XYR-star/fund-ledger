@@ -17,6 +17,12 @@ DEFAULTS = {
     "BAIDU_OCR_API_KEY": "",
     "BAIDU_OCR_SECRET_KEY": "",
     "BAIDU_TABLE_OCR_ENDPOINT": "https://aip.baidubce.com/rest/2.0/ocr/v1/table",
+    "NAV_SYNC_ENABLED": "false",
+    "NAV_SYNC_TIME": "18:30",
+    "NAV_SYNC_PZ": "40000",
+    "NAV_SYNC_LAST_RUN_DATE": "",
+    "NAV_SYNC_LAST_RUN_AT": "",
+    "NAV_SYNC_LAST_RESULT": "",
 }
 
 

@@ -892,6 +892,124 @@ def test_masked_settings_do_not_overwrite_secrets(app_ctx):
         assert main.preserve_masked_secret("new-secret", "real-secret") == "new-secret"
 
 
+def test_nav_sync_settings_are_saved(app_ctx):
+    _, db, client = app_ctx
+    from app.app_settings import runtime_settings
+
+    response = client.post(
+        "/settings",
+        data={
+            "ocr_enabled": "on",
+            "baidu_table_ocr_endpoint": "https://example.com/ocr",
+            "nav_sync_enabled": "on",
+            "nav_sync_time": "19:45",
+            "nav_sync_pz": "800",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        config = runtime_settings(session)
+        assert config["NAV_SYNC_ENABLED"] == "true"
+        assert config["NAV_SYNC_TIME"] == "19:45"
+        assert config["NAV_SYNC_PZ"] == "800"
+
+
+def test_manual_nav_sync_updates_active_open_funds_only(app_ctx, monkeypatch):
+    main, db, client = app_ctx
+    from app.app_settings import runtime_settings
+    from app.models import FundRule, FundTransaction, FundType, TransactionAction
+
+    synced = []
+
+    def fake_sync(session, code, pz=40000):
+        synced.append((code, pz))
+        return 2, None
+
+    monkeypatch.setattr(main, "sync_nav_for_fund", fake_sync)
+    with Session(db.engine) as session:
+        seed_open_fund(session, main, code="005827", name="活跃基金")
+        seed_open_fund(session, main, code="000001", name="已清仓基金")
+        session.add(FundRule(fund_code="510300", fund_name="ETF", fund_type=FundType.etf))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="活跃基金",
+                fund_type=FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="000001",
+                fund_name="已清仓基金",
+                fund_type=FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="000001",
+                fund_name="已清仓基金",
+                fund_type=FundType.open_fund,
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.sell,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="510300",
+                fund_name="ETF",
+                fund_type=FundType.etf,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.commit()
+
+    response = client.post("/settings/nav-sync-now", follow_redirects=False)
+    assert response.status_code == 303
+    assert synced == [("005827", 40000)]
+    with Session(db.engine) as session:
+        config = runtime_settings(session)
+        assert config["NAV_SYNC_LAST_RUN_AT"]
+        assert "成功 1 个" in config["NAV_SYNC_LAST_RESULT"]
+
+
+def test_daily_nav_sync_runs_once_after_shanghai_time(app_ctx):
+    main, _, _ = app_ctx
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    config = {
+        "NAV_SYNC_ENABLED": "true",
+        "NAV_SYNC_TIME": "18:30",
+        "NAV_SYNC_LAST_RUN_DATE": "2024-01-01",
+    }
+    before = datetime(2024, 1, 2, 18, 29, tzinfo=ZoneInfo("Asia/Shanghai"))
+    after = datetime(2024, 1, 2, 18, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    already = {**config, "NAV_SYNC_LAST_RUN_DATE": "2024-01-02"}
+
+    assert main.should_run_daily_nav_sync(before, config) is False
+    assert main.should_run_daily_nav_sync(after, config) is True
+    assert main.should_run_daily_nav_sync(after, already) is False
+
+
 def test_nav_sync_uses_provider_fallback(app_ctx):
     _, db, _ = app_ctx
     from app.models import FundNav

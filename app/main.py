@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -39,7 +41,7 @@ from .models import (
 from .nav import sync_nav_for_fund
 from .ocr import recognize_file
 from .templates import templates
-from .timezone import BUSINESS_TIMEZONE_NAME, now_shanghai_naive
+from .timezone import BUSINESS_TIMEZONE, BUSINESS_TIMEZONE_NAME, now_shanghai_naive
 
 
 app = FastAPI(title="Fund Ledger")
@@ -64,6 +66,8 @@ PLACEHOLDER_VALUES = {"", "-", "--", "—", "－", "无", "暂无"}
 POSITION_EPS_SHARE = 0.5
 POSITION_EPS_COST = 1.0
 POSITION_EPS_MARKET_VALUE = 1.0
+NAV_SYNC_POLL_SECONDS = 60
+_nav_sync_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
@@ -72,6 +76,24 @@ def on_startup() -> None:
     init_db()
     with Session(engine) as session:
         seed_aliases_from_fund_map(session)
+
+
+@app.on_event("startup")
+async def start_nav_sync_scheduler() -> None:
+    global _nav_sync_task
+    if _nav_sync_task is None or _nav_sync_task.done():
+        _nav_sync_task = asyncio.create_task(nav_sync_scheduler_loop())
+
+
+@app.on_event("shutdown")
+async def stop_nav_sync_scheduler() -> None:
+    global _nav_sync_task
+    if _nav_sync_task is None:
+        return
+    _nav_sync_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _nav_sync_task
+    _nav_sync_task = None
 
 
 def redirect(path: str) -> RedirectResponse:
@@ -669,6 +691,16 @@ def fund_nav_sync(fund_code: str, _: str = Depends(require_user), session: Sessi
     return redirect(f"/funds?message=净值已同步 {inserted} 条")
 
 
+@app.post("/settings/nav-sync-now")
+def settings_nav_sync_now(_: str = Depends(require_user)):
+    result = sync_active_fund_navs_once()
+    if result["failed"]:
+        return redirect(
+            f"/settings?message=净值同步完成: 成功 {result['succeeded']} 个，失败 {result['failed']} 个"
+        )
+    return redirect(f"/settings?message=净值同步完成: 成功 {result['succeeded']} 个，新增 {result['inserted']} 条")
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, message: str = "", _: str = Depends(require_user), session: Session = Depends(get_session)):
     config = runtime_settings(session)
@@ -684,10 +716,15 @@ def settings_update(
     baidu_ocr_api_key: str = Form(""),
     baidu_ocr_secret_key: str = Form(""),
     baidu_table_ocr_endpoint: str = Form(""),
+    nav_sync_enabled: str = Form("off"),
+    nav_sync_time: str = Form("18:30"),
+    nav_sync_pz: str = Form("40000"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
     current = runtime_settings(session)
+    parsed_nav_sync_time = normalize_nav_sync_time(nav_sync_time) or current.get("NAV_SYNC_TIME", "18:30")
+    parsed_nav_sync_pz = normalize_nav_sync_pz(nav_sync_pz) or current.get("NAV_SYNC_PZ", "40000")
     save_settings(
         session,
         {
@@ -697,9 +734,110 @@ def settings_update(
             "BAIDU_OCR_SECRET_KEY": preserve_masked_secret(baidu_ocr_secret_key, current.get("BAIDU_OCR_SECRET_KEY", "")),
             "BAIDU_TABLE_OCR_ENDPOINT": baidu_table_ocr_endpoint.strip()
             or current.get("BAIDU_TABLE_OCR_ENDPOINT", "https://aip.baidubce.com/rest/2.0/ocr/v1/table"),
+            "NAV_SYNC_ENABLED": "true" if nav_sync_enabled == "on" else "false",
+            "NAV_SYNC_TIME": parsed_nav_sync_time,
+            "NAV_SYNC_PZ": parsed_nav_sync_pz,
         },
     )
     return redirect("/settings?message=设置已保存")
+
+
+async def nav_sync_scheduler_loop() -> None:
+    while True:
+        try:
+            if should_run_daily_nav_sync():
+                await asyncio.to_thread(sync_active_fund_navs_once)
+        except Exception as exc:
+            record_nav_sync_failure(f"自动同步异常: {exc}")
+        await asyncio.sleep(NAV_SYNC_POLL_SECONDS)
+
+
+def should_run_daily_nav_sync(now: datetime | None = None, config: dict[str, str] | None = None) -> bool:
+    now = now or datetime.now(BUSINESS_TIMEZONE)
+    with Session(engine) as session:
+        config = config or runtime_settings(session)
+    if config.get("NAV_SYNC_ENABLED") not in {"true", "True", "1", "on"}:
+        return False
+    run_at = normalize_nav_sync_time(config.get("NAV_SYNC_TIME", "")) or "18:30"
+    target = parse_time(run_at)
+    if target is None:
+        return False
+    if now.time().replace(second=0, microsecond=0) < target.replace(second=0, microsecond=0):
+        return False
+    return config.get("NAV_SYNC_LAST_RUN_DATE") != now.date().isoformat()
+
+
+def sync_active_fund_navs_once() -> dict[str, int]:
+    with Session(engine) as session:
+        config = runtime_settings(session)
+        pz = int(normalize_nav_sync_pz(config.get("NAV_SYNC_PZ", "")) or "40000")
+        codes = active_open_fund_codes_for_nav_sync(session)
+        inserted = 0
+        succeeded = 0
+        failed = 0
+        errors = []
+        for code in codes:
+            count, error = sync_nav_for_fund(session, code, pz=pz)
+            if error:
+                failed += 1
+                errors.append(f"{code}: {error}")
+            else:
+                succeeded += 1
+                inserted += count
+        now = datetime.now(BUSINESS_TIMEZONE)
+        summary = f"成功 {succeeded} 个，失败 {failed} 个，新增 {inserted} 条"
+        if errors:
+            summary = f"{summary}；" + "；".join(errors[:5])
+        save_settings(
+            session,
+            {
+                "NAV_SYNC_LAST_RUN_DATE": now.date().isoformat(),
+                "NAV_SYNC_LAST_RUN_AT": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "NAV_SYNC_LAST_RESULT": summary,
+            },
+        )
+        return {"total": len(codes), "succeeded": succeeded, "failed": failed, "inserted": inserted}
+
+
+def record_nav_sync_failure(message: str) -> None:
+    with Session(engine) as session:
+        now = datetime.now(BUSINESS_TIMEZONE)
+        save_settings(
+            session,
+            {
+                "NAV_SYNC_LAST_RUN_DATE": now.date().isoformat(),
+                "NAV_SYNC_LAST_RUN_AT": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "NAV_SYNC_LAST_RESULT": message,
+            },
+        )
+
+
+def active_open_fund_codes_for_nav_sync(session: Session) -> list[str]:
+    rule_types = {
+        rule.fund_code: rule.fund_type
+        for rule in session.exec(select(FundRule)).all()
+    }
+    codes = []
+    for position in calculate_positions(session, include_closed=False):
+        code = position["fund_code"]
+        if rule_types.get(code, FundType.open_fund) == FundType.open_fund:
+            codes.append(code)
+    return sorted(set(codes))
+
+
+def normalize_nav_sync_time(value: str) -> str:
+    parsed = parse_time(value)
+    if parsed is None:
+        return ""
+    return parsed.strftime("%H:%M")
+
+
+def normalize_nav_sync_pz(value: str) -> str:
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return ""
+    return str(min(max(parsed, 200), 50000))
 
 
 def save_ocr_rows(session: Session, doc: ImportDocument, rows: list[list[str]]) -> int:
