@@ -775,7 +775,35 @@ def test_position_cost_uses_fifo_and_cash_dividend_reduces_cost(app_ctx):
         assert position["share"] == 100
         assert position["cost"] == 110
         assert position["realized_profit"] == 10
+        assert position["profit"] == -10
+        assert position["total_profit"] == 0
         assert position["unit_cost"] == 1.1
+
+
+def test_holdings_label_holding_and_total_profit(app_ctx):
+    main, db, client = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=1.2))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 1),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.commit()
+
+    response = client.get("/holdings")
+    assert response.status_code == 200
+    assert "持仓收益" in response.text
+    assert "累计收益" in response.text
 
 
 def test_sell_without_prior_buy_is_marked_incomplete(app_ctx):

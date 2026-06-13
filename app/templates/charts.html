@@ -16,7 +16,7 @@
       </div>
       <div class="chart-metrics">
         <span class="badge">市值 {{ "%.2f"|format(item.position.market_value) }}</span>
-        <span class="badge">盈亏 {{ "%.2f"|format(item.position.profit) }}</span>
+        <span class="badge">持仓收益 {{ "%.2f"|format(item.position.profit) }}</span>
         <span class="badge">{{ "%.2f%%"|format(item.position.profit_rate * 100) if item.position.profit_rate is not none else "-" }}</span>
       </div>
     </div>

@@ -591,6 +591,7 @@ def holdings_page(request: Request, _: str = Depends(require_user), session: Ses
         "cost": sum(p["cost"] for p in active),
         "profit": sum(p["profit"] for p in active),
         "realized": sum(p["realized_profit"] for p in positions),
+        "total_profit": sum(p["total_profit"] for p in positions),
     }
     return templates.TemplateResponse(
         "holdings.html",
@@ -1816,7 +1817,8 @@ def calculate_positions(session: Session, include_closed: bool = True) -> list[d
         if is_closed and not include_closed:
             continue
         unit_cost = item["cost"] / item["share"] if item["share"] else None
-        positions.append({**item, "latest_nav": latest_nav, "nav_date": nav.nav_date if nav else None, "market_value": market, "profit": profit, "profit_rate": profit / item["cost"] if item["cost"] else None, "unit_cost": unit_cost, "is_closed": is_closed})
+        total_profit = item["realized_profit"] + profit
+        positions.append({**item, "latest_nav": latest_nav, "nav_date": nav.nav_date if nav else None, "market_value": market, "profit": profit, "profit_rate": profit / item["cost"] if item["cost"] else None, "unit_cost": unit_cost, "total_profit": total_profit, "total_profit_rate": total_profit / item["cost"] if item["cost"] else None, "is_closed": is_closed})
     return sorted(positions, key=lambda p: (p["is_closed"], -p["market_value"], p["fund_code"]))
 
 

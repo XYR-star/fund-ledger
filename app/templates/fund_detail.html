@@ -10,7 +10,9 @@
   <div class="metric"><span>成本</span><strong>{{ "%.2f"|format(position.cost) }}</strong></div>
   <div class="metric"><span>单位成本</span><strong>{{ "%.4f"|format(position.unit_cost) if position.unit_cost is not none else "-" }}</strong></div>
   <div class="metric"><span>市值</span><strong>{{ "%.2f"|format(position.market_value) }}</strong></div>
-  <div class="metric"><span>浮盈亏</span><strong>{{ "%.2f"|format(position.profit) }}</strong></div>
+  <div class="metric"><span>持仓收益</span><strong>{{ "%.2f"|format(position.profit) }}</strong></div>
+  <div class="metric"><span>已实现</span><strong>{{ "%.2f"|format(position.realized_profit) }}</strong></div>
+  <div class="metric"><span>累计收益</span><strong>{{ "%.2f"|format(position.total_profit) }}</strong></div>
 </section>
 {% endif %}
 <section class="panel stack" style="margin-top:12px">
