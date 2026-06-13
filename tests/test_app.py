@@ -1242,6 +1242,67 @@ def test_eaccount_import_merges_same_fund_rows_before_reconciling(app_ctx):
         assert holding.local_share == 517.74
 
 
+def test_eaccount_cleanup_merges_existing_duplicate_fund_holdings(app_ctx):
+    _, db, _ = app_ctx
+    from app.models import EAccountHolding, EAccountImport
+
+    with Session(db.engine) as session:
+        imported = EAccountImport(file_name="old.xlsx", row_count=2, mismatch_count=2)
+        session.add(imported)
+        session.flush()
+        session.add(
+            EAccountHolding(
+                import_id=imported.id,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                official_share=301.18,
+                share_date=date(2024, 1, 2),
+                nav=1,
+                nav_date=date(2024, 1, 2),
+                settlement_value=301.18,
+                local_share=517.74,
+                local_market_value=517.74,
+                share_diff=-216.56,
+                market_value_diff=-216.56,
+                status="mismatch",
+                issue_summary="份额差异 -216.56",
+            )
+        )
+        session.add(
+            EAccountHolding(
+                import_id=imported.id,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                official_share=216.56,
+                share_date=date(2024, 1, 2),
+                nav=1,
+                nav_date=date(2024, 1, 2),
+                settlement_value=216.56,
+                local_share=517.74,
+                local_market_value=517.74,
+                share_diff=-301.18,
+                market_value_diff=-301.18,
+                status="mismatch",
+                issue_summary="份额差异 -301.18",
+            )
+        )
+        session.commit()
+
+    db.merge_existing_eaccount_holdings()
+
+    with Session(db.engine) as session:
+        imported = session.get(EAccountImport, 1)
+        holding = session.exec(select(EAccountHolding)).one()
+        assert imported.row_count == 1
+        assert imported.matched_count == 1
+        assert imported.mismatch_count == 0
+        assert holding.official_share == 517.74
+        assert holding.settlement_value == 517.74
+        assert holding.share_diff == 0
+        assert holding.market_value_diff == 0
+        assert holding.status == "matched"
+
+
 def test_eaccount_import_reconciles_against_snapshot_date_not_current_position(app_ctx):
     main, db, client = app_ctx
     from app.models import EAccountHolding, FundNav, FundTransaction, TransactionAction
