@@ -23,9 +23,23 @@ def configure_sqlite(dbapi_connection, _):
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
+    migrate_transaction_candidate_schema()
     migrate_eaccount_holding_schema()
     cleanup_invalid_eaccount_holdings()
     merge_existing_eaccount_holdings()
+
+
+def migrate_transaction_candidate_schema() -> None:
+    table = SQLModel.metadata.tables.get("transactioncandidate")
+    if table is None:
+        return
+    with engine.begin() as connection:
+        existing_rows = connection.exec_driver_sql("PRAGMA table_info(transactioncandidate)").fetchall()
+        if not existing_rows:
+            return
+        existing = {row[1] for row in existing_rows}
+        if "manual_corrected" not in existing:
+            connection.exec_driver_sql("ALTER TABLE transactioncandidate ADD COLUMN manual_corrected BOOLEAN NOT NULL DEFAULT 0")
 
 
 def migrate_eaccount_holding_schema() -> None:

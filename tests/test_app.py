@@ -1942,6 +1942,64 @@ def test_candidates_page_renders_candidate_form(app_ctx):
     assert 'name="amount_cny" value="1000.0"' in response.text
 
 
+def test_successful_candidate_update_marks_manual_correction_on_candidate_and_import_pages(app_ctx):
+    main, db, client = app_ctx
+    from app.models import ImportDocument, ImportStatus, TransactionCandidate, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        doc = ImportDocument(file_name="手动录入", status=ImportStatus.parsed)
+        session.add(doc)
+        session.flush()
+        candidate = TransactionCandidate(
+            document_id=doc.id,
+            fund_code="005827",
+            fund_name="易方达蓝筹精选混合",
+            fund_type=main.FundType.open_fund,
+            action=TransactionAction.buy,
+            row_status=main.RowStatus.success,
+            trade_date=date(2024, 1, 2),
+            amount_cny=1000,
+            nav=1,
+            status=main.CandidateStatus.auto_ready,
+        )
+        session.add(candidate)
+        session.commit()
+        doc_id = doc.id
+        candidate_id = candidate.id
+
+    response = client.post(
+        f"/candidates/{candidate_id}/update",
+        data={
+            "fund_code": "005827",
+            "fund_name": "易方达蓝筹精选混合",
+            "fund_type": "open_fund",
+            "action": "buy",
+            "row_status": "success",
+            "trade_date": "2024-01-02",
+            "submitted_at": "",
+            "amount_cny": "999.99",
+            "share": "",
+            "nav": "1",
+            "fee": "",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        candidate = session.get(TransactionCandidate, candidate_id)
+        assert candidate.manual_corrected is True
+
+    candidates_page = client.get("/candidates")
+    assert candidates_page.status_code == 200
+    assert "已修正" in candidates_page.text
+
+    import_page = client.get(f"/imports/{doc_id}")
+    assert import_page.status_code == 200
+    assert "已修正" in import_page.text
+
+
 def test_updating_posted_buy_candidate_syncs_transaction_and_recomputes_share(app_ctx):
     main, db, client = app_ctx
     from app.models import FundNav, FundRule, FundTransaction, FundType, TransactionAction, TransactionCandidate

@@ -555,6 +555,7 @@ def candidate_update(
     old_tx_values = transaction_values(posted_tx)
     apply_candidate_form(candidate, fund_code, fund_name, fund_type, action, row_status, trade_date, submitted_at, amount_cny, share, nav, fee)
     clear_stale_posted_calculations(candidate, posted_tx, old_tx_values)
+    candidate.manual_corrected = True
     if candidate.fund_code and candidate.fund_name:
         upsert_alias(session, candidate.fund_name, candidate.fund_code, candidate.fund_name, candidate.fund_type, "manual")
     normalize_candidate_for_posting(session, candidate)

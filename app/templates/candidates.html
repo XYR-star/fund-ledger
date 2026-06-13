@@ -30,6 +30,7 @@
         <strong>#{{ c.id }}</strong>
         <span class="badge">{{ c.status.value }}</span>
         <span class="badge">{{ c.row_status.value }}</span>
+        {% if c.manual_corrected %}<span class="badge warn">已修正</span>{% endif %}
         {% if c.review_reason %}<span class="muted">{{ c.review_reason }}</span>{% endif %}
       </div>
       <div class="actions">

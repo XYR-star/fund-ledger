@@ -136,6 +136,7 @@ class TransactionCandidate(SQLModel, table=True):
     fee: Optional[float] = None
     confidence: float = 0.0
     review_reason: str = ""
+    manual_corrected: bool = Field(default=False, index=True)
     raw_text: str = ""
     posted_transaction_id: Optional[int] = None
     posted_event_id: Optional[int] = None

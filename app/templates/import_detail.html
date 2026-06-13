@@ -45,7 +45,7 @@
   <h2>候选</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>ID</th><th>状态</th><th>基金</th><th>动作</th><th>日期</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th><th>原因</th></tr></thead>
+      <thead><tr><th>ID</th><th>状态</th><th>基金</th><th>动作</th><th>日期</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th><th>标记</th><th>原因</th></tr></thead>
       <tbody>
         {% for c in candidates %}
         <tr>
@@ -58,10 +58,11 @@
           <td>{{ "%.2f"|format(c.share) if c.share is not none else "-" }}</td>
           <td>{{ c.nav if c.nav is not none else "-" }}</td>
           <td>{{ c.fee if c.fee is not none else "-" }}</td>
+          <td>{% if c.manual_corrected %}<span class="badge warn">已修正</span>{% else %}-{% endif %}</td>
           <td class="muted">{{ c.review_reason }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="10" class="muted">还没有候选。</td></tr>
+        <tr><td colspan="11" class="muted">还没有候选。</td></tr>
         {% endfor %}
       </tbody>
     </table>
