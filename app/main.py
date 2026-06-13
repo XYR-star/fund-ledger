@@ -702,6 +702,28 @@ def settings_nav_sync_now(_: str = Depends(require_user)):
     return redirect(f"/settings?message=净值同步完成: 成功 {result['succeeded']} 个，新增 {result['inserted']} 条")
 
 
+@app.post("/settings/nav-sync")
+def settings_nav_sync_update(
+    nav_sync_enabled: str = Form("off"),
+    nav_sync_time: str = Form("18:30"),
+    nav_sync_pz: str = Form("40000"),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    current = runtime_settings(session)
+    parsed_nav_sync_time = normalize_nav_sync_time(nav_sync_time) or current.get("NAV_SYNC_TIME", "18:30")
+    parsed_nav_sync_pz = normalize_nav_sync_pz(nav_sync_pz) or current.get("NAV_SYNC_PZ", "40000")
+    save_settings(
+        session,
+        {
+            "NAV_SYNC_ENABLED": "true" if nav_sync_enabled == "on" else "false",
+            "NAV_SYNC_TIME": parsed_nav_sync_time,
+            "NAV_SYNC_PZ": parsed_nav_sync_pz,
+        },
+    )
+    return redirect("/settings?message=净值同步设置已保存")
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, message: str = "", _: str = Depends(require_user), session: Session = Depends(get_session)):
     config = runtime_settings(session)
@@ -717,15 +739,10 @@ def settings_update(
     baidu_ocr_api_key: str = Form(""),
     baidu_ocr_secret_key: str = Form(""),
     baidu_table_ocr_endpoint: str = Form(""),
-    nav_sync_enabled: str = Form("off"),
-    nav_sync_time: str = Form("18:30"),
-    nav_sync_pz: str = Form("40000"),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
     current = runtime_settings(session)
-    parsed_nav_sync_time = normalize_nav_sync_time(nav_sync_time) or current.get("NAV_SYNC_TIME", "18:30")
-    parsed_nav_sync_pz = normalize_nav_sync_pz(nav_sync_pz) or current.get("NAV_SYNC_PZ", "40000")
     save_settings(
         session,
         {
@@ -735,12 +752,9 @@ def settings_update(
             "BAIDU_OCR_SECRET_KEY": preserve_masked_secret(baidu_ocr_secret_key, current.get("BAIDU_OCR_SECRET_KEY", "")),
             "BAIDU_TABLE_OCR_ENDPOINT": baidu_table_ocr_endpoint.strip()
             or current.get("BAIDU_TABLE_OCR_ENDPOINT", "https://aip.baidubce.com/rest/2.0/ocr/v1/table"),
-            "NAV_SYNC_ENABLED": "true" if nav_sync_enabled == "on" else "false",
-            "NAV_SYNC_TIME": parsed_nav_sync_time,
-            "NAV_SYNC_PZ": parsed_nav_sync_pz,
         },
     )
-    return redirect("/settings?message=设置已保存")
+    return redirect("/settings?message=OCR 设置已保存")
 
 
 async def nav_sync_scheduler_loop() -> None:

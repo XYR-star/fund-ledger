@@ -897,10 +897,8 @@ def test_nav_sync_settings_are_saved(app_ctx):
     from app.app_settings import runtime_settings
 
     response = client.post(
-        "/settings",
+        "/settings/nav-sync",
         data={
-            "ocr_enabled": "on",
-            "baidu_table_ocr_endpoint": "https://example.com/ocr",
             "nav_sync_enabled": "on",
             "nav_sync_time": "19:45",
             "nav_sync_pz": "800",
@@ -914,6 +912,58 @@ def test_nav_sync_settings_are_saved(app_ctx):
         assert config["NAV_SYNC_ENABLED"] == "true"
         assert config["NAV_SYNC_TIME"] == "19:45"
         assert config["NAV_SYNC_PZ"] == "800"
+
+
+def test_ocr_and_nav_sync_settings_save_independently(app_ctx):
+    _, db, client = app_ctx
+    from app.app_settings import runtime_settings, save_settings
+
+    with Session(db.engine) as session:
+        save_settings(
+            session,
+            {
+                "BAIDU_OCR_API_KEY": "secret-key",
+                "BAIDU_OCR_SECRET_KEY": "secret-secret",
+                "BAIDU_TABLE_OCR_ENDPOINT": "https://old.example/ocr",
+                "NAV_SYNC_ENABLED": "true",
+                "NAV_SYNC_TIME": "19:45",
+                "NAV_SYNC_PZ": "800",
+            },
+        )
+
+    client.post(
+        "/settings",
+        data={
+            "ocr_enabled": "on",
+            "baidu_ocr_api_key": "********",
+            "baidu_ocr_secret_key": "********",
+            "baidu_table_ocr_endpoint": "https://new.example/ocr",
+        },
+        follow_redirects=False,
+    )
+    with Session(db.engine) as session:
+        config = runtime_settings(session)
+        assert config["BAIDU_OCR_API_KEY"] == "secret-key"
+        assert config["BAIDU_TABLE_OCR_ENDPOINT"] == "https://new.example/ocr"
+        assert config["NAV_SYNC_ENABLED"] == "true"
+        assert config["NAV_SYNC_TIME"] == "19:45"
+        assert config["NAV_SYNC_PZ"] == "800"
+
+    client.post(
+        "/settings/nav-sync",
+        data={
+            "nav_sync_enabled": "on",
+            "nav_sync_time": "20:15",
+            "nav_sync_pz": "1200",
+        },
+        follow_redirects=False,
+    )
+    with Session(db.engine) as session:
+        config = runtime_settings(session)
+        assert config["BAIDU_OCR_API_KEY"] == "secret-key"
+        assert config["BAIDU_TABLE_OCR_ENDPOINT"] == "https://new.example/ocr"
+        assert config["NAV_SYNC_TIME"] == "20:15"
+        assert config["NAV_SYNC_PZ"] == "1200"
 
 
 def test_manual_nav_sync_updates_active_open_funds_only(app_ctx, monkeypatch):

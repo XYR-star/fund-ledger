@@ -10,6 +10,11 @@
     <label>百度 API Key<input name="baidu_ocr_api_key" placeholder="{{ masked(config.BAIDU_OCR_API_KEY) }}"></label>
     <label>百度 Secret Key<input name="baidu_ocr_secret_key" placeholder="{{ masked(config.BAIDU_OCR_SECRET_KEY) }}"></label>
     <label>表格 OCR Endpoint<input name="baidu_table_ocr_endpoint" value="{{ config.BAIDU_TABLE_OCR_ENDPOINT }}"></label>
+    <button class="btn primary" type="submit">保存 OCR 设置</button>
+  </form>
+</section>
+<section class="panel stack" style="margin-top:12px">
+  <form class="stack" method="post" action="/settings/nav-sync">
     <h2>净值同步</h2>
     <label><span><input type="checkbox" name="nav_sync_enabled" {% if config.NAV_SYNC_ENABLED in [true, "true", "True", "1"] %}checked{% endif %} style="width:auto"> 每日自动同步活跃场外基金净值</span></label>
     <div class="form-grid">
@@ -22,7 +27,7 @@
       {% if config.NAV_SYNC_LAST_RUN_AT %}{{ config.NAV_SYNC_LAST_RUN_AT }}{% else %}尚未运行{% endif %}
       {% if config.NAV_SYNC_LAST_RESULT %}；{{ config.NAV_SYNC_LAST_RESULT }}{% endif %}
     </p>
-    <button class="btn primary" type="submit">保存</button>
+    <button class="btn primary" type="submit">保存净值同步设置</button>
   </form>
 </section>
 <section class="panel stack" style="margin-top:12px">
