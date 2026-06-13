@@ -6,7 +6,7 @@
 </div>
 {% if position %}
 <section class="metrics">
-  <div class="metric"><span>份额</span><strong>{{ "%.4f"|format(position.share) }}</strong></div>
+  <div class="metric"><span>份额</span><strong>{{ "%.2f"|format(position.share) }}</strong></div>
   <div class="metric"><span>成本</span><strong>{{ "%.2f"|format(position.cost) }}</strong></div>
   <div class="metric"><span>单位成本</span><strong>{{ "%.4f"|format(position.unit_cost) if position.unit_cost is not none else "-" }}</strong></div>
   <div class="metric"><span>市值</span><strong>{{ "%.2f"|format(position.market_value) }}</strong></div>
@@ -33,7 +33,7 @@
 <section class="table-wrap" style="margin-top:12px">
   <table>
     <thead><tr><th>交易日</th><th>动作</th><th>金额</th><th>份额</th><th>净值</th></tr></thead>
-    <tbody>{% for tx in transactions %}<tr><td>{{ tx.trade_date }}</td><td>{{ tx.action.value }}</td><td>{{ tx.amount_cny or "-" }}</td><td>{{ tx.share or "-" }}</td><td>{{ tx.nav or "-" }}</td></tr>{% endfor %}</tbody>
+    <tbody>{% for tx in transactions %}<tr><td>{{ tx.trade_date }}</td><td>{{ tx.action.value }}</td><td>{{ tx.amount_cny or "-" }}</td><td>{{ "%.2f"|format(tx.share) if tx.share is not none else "-" }}</td><td>{{ tx.nav or "-" }}</td></tr>{% endfor %}</tbody>
   </table>
 </section>
 <script src="/static/fund_charts.js?v=20260613-range-axis"></script>

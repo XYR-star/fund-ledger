@@ -24,7 +24,7 @@
           <td><span class="badge">{{ "事件" if row.kind == "event" else "交易" }}</span></td>
           <td>{{ row.action }}</td>
           <td>{{ "%.2f"|format(row.amount_cny) if row.amount_cny is not none else "-" }}</td>
-          <td>{{ "%.4f"|format(row.share) if row.share is not none else "-" }}</td>
+          <td>{{ "%.2f"|format(row.share) if row.share is not none else "-" }}</td>
           <td>{{ row.nav or "-" }}</td>
           <td>{{ row.fee if row.fee is not none else "-" }}</td>
           <td>{{ row.confirm_date or "-" }}</td>

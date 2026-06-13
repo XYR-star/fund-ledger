@@ -55,7 +55,7 @@
           <td>{{ c.action.value if c.action else c.event_type.value if c.event_type else "-" }}</td>
           <td>{{ c.trade_date or "-" }}</td>
           <td>{{ c.amount_cny if c.amount_cny is not none else "-" }}</td>
-          <td>{{ c.share if c.share is not none else "-" }}</td>
+          <td>{{ "%.2f"|format(c.share) if c.share is not none else "-" }}</td>
           <td>{{ c.nav if c.nav is not none else "-" }}</td>
           <td>{{ c.fee if c.fee is not none else "-" }}</td>
           <td class="muted">{{ c.review_reason }}</td>
