@@ -1133,7 +1133,7 @@ def build_platform_cards(session: Session, positions: list[dict]) -> list[dict]:
 
 
 def import_eaccount_holdings(session: Session, file_name: str, content: bytes) -> EAccountImport:
-    rows = read_eaccount_rows(file_name, content)
+    rows = merge_eaccount_rows(read_eaccount_rows(file_name, content))
     if not rows:
         raise ValueError("没有识别到基金 E 账户持仓行")
     imported = EAccountImport(file_name=file_name, source_hash=_hash_content(content), row_count=len(rows))
@@ -1164,6 +1164,32 @@ def import_eaccount_holdings(session: Session, file_name: str, content: bytes) -
     session.commit()
     session.refresh(imported)
     return imported
+
+
+def merge_eaccount_rows(rows: list[dict]) -> list[dict]:
+    merged: dict[tuple[str, date | None], dict] = {}
+    order: list[tuple[str, date | None]] = []
+    for row in rows:
+        key = (row.get("fund_code") or row.get("fund_name") or "", row.get("share_date") or row.get("nav_date"))
+        if key not in merged:
+            merged[key] = dict(row)
+            order.append(key)
+            continue
+        target = merged[key]
+        for field in ("official_share", "official_market_value", "settlement_value"):
+            target[field] = sum_optional_numbers(target.get(field), row.get(field))
+        for field in ("fund_name", "fund_account", "share_date", "nav", "nav_date"):
+            if not target.get(field) and row.get(field):
+                target[field] = row.get(field)
+    return [merged[key] for key in order]
+
+
+def sum_optional_numbers(left: float | None, right: float | None) -> float | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return round_money(left + right)
 
 
 def read_eaccount_rows(file_name: str, content: bytes) -> list[dict]:

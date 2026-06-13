@@ -1196,6 +1196,52 @@ def test_eaccount_import_marks_mismatched_holdings(app_ctx):
         assert "份额差异" in holding.issue_summary
 
 
+def test_eaccount_import_merges_same_fund_rows_before_reconciling(app_ctx):
+    main, db, client = app_ctx
+    from app.models import EAccountHolding, EAccountImport, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=517.74,
+                share=517.74,
+                nav=1,
+            )
+        )
+        session.commit()
+
+    csv = "\n".join(
+        [
+            "基金代码,基金名称,持有份额,份额日期,基金净值,净值日期,结算市值",
+            "005827,易方达蓝筹精选混合,301.18,2024-01-02,1.00,2024-01-02,301.18",
+            "005827,易方达蓝筹精选混合,216.56,2024-01-02,1.00,2024-01-02,216.56",
+        ]
+    )
+    response = client.post(
+        "/eaccount/import",
+        files={"file": ("eaccount.csv", csv.encode("utf-8"), "text/csv")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        imported = session.exec(select(EAccountImport)).one()
+        holding = session.exec(select(EAccountHolding)).one()
+        assert imported.row_count == 1
+        assert imported.matched_count == 1
+        assert imported.mismatch_count == 0
+        assert holding.status == "matched"
+        assert holding.official_share == 517.74
+        assert holding.settlement_value == 517.74
+        assert holding.local_share == 517.74
+
+
 def test_eaccount_import_reconciles_against_snapshot_date_not_current_position(app_ctx):
     main, db, client = app_ctx
     from app.models import EAccountHolding, FundNav, FundTransaction, TransactionAction
