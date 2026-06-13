@@ -1756,7 +1756,8 @@ def calculate_positions(session: Session, include_closed: bool = True) -> list[d
             profit = 0.0
         if is_closed and not include_closed:
             continue
-        positions.append({**item, "latest_nav": latest_nav, "nav_date": nav.nav_date if nav else None, "market_value": market, "profit": profit, "profit_rate": profit / item["cost"] if item["cost"] else None, "is_closed": is_closed})
+        unit_cost = item["cost"] / item["share"] if item["share"] else None
+        positions.append({**item, "latest_nav": latest_nav, "nav_date": nav.nav_date if nav else None, "market_value": market, "profit": profit, "profit_rate": profit / item["cost"] if item["cost"] else None, "unit_cost": unit_cost, "is_closed": is_closed})
     return sorted(positions, key=lambda p: (p["is_closed"], -p["market_value"], p["fund_code"]))
 
 

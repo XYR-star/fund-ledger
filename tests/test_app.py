@@ -653,6 +653,35 @@ def test_small_buy_without_sell_stays_active(app_ctx):
         assert positions[0]["share"] == 0.1
 
 
+def test_holdings_show_unit_cost(app_ctx):
+    main, db, client = app_ctx
+    from app.models import FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=123,
+                share=100,
+                nav=1.23,
+            )
+        )
+        session.commit()
+
+        position = main.calculate_positions(session, include_closed=False)[0]
+        assert position["unit_cost"] == 1.23
+
+    response = client.get("/holdings")
+    assert response.status_code == 200
+    assert "单位成本" in response.text
+    assert "1.2300" in response.text
+
+
 def test_sell_without_prior_buy_is_marked_incomplete(app_ctx):
     main, db, _ = app_ctx
     from app.models import FundNav, FundTransaction, TransactionAction
