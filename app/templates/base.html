@@ -8,19 +8,12 @@
     (() => {
       const key = "fund-ledger-theme";
       let theme = "";
-      try {
-        theme = localStorage.getItem(key) || "";
-      } catch {
-        theme = "";
-      }
-      if (!theme) {
-        theme = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-      }
+      try { theme = localStorage.getItem(key) || ""; } catch {}
+      if (!theme) theme = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css">
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="stylesheet" href="/static/styles.css?v=20260613-ledger-toggle-right">
 </head>
 <body>
   <div class="shell">
@@ -35,7 +28,11 @@
       <nav class="nav">
         <a href="/upload">上传</a>
         <a href="/imports">导入</a>
-        <a href="/ledger">流水表</a>
+        <a href="/candidates">候选</a>
+        <a href="/transactions">流水</a>
+        <a href="/events">事件</a>
+        <a href="/holdings">持仓</a>
+        <a href="/funds">基金</a>
         <a href="/settings">设置</a>
         <form method="post" action="/logout"><button type="submit">退出</button></form>
       </nav>
@@ -51,14 +48,10 @@
       const setTheme = (theme) => {
         document.documentElement.dataset.theme = theme;
         toggle?.setAttribute("aria-pressed", theme === "dark" ? "true" : "false");
-        try {
-          localStorage.setItem(key, theme);
-        } catch {}
+        try { localStorage.setItem(key, theme); } catch {}
       };
       setTheme(document.documentElement.dataset.theme || "light");
-      toggle?.addEventListener("click", () => {
-        setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
-      });
+      toggle?.addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
     })();
   </script>
 </body>

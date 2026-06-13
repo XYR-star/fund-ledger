@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}候选 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>候选入账</h1>
+    <p class="muted">高质量候选 {{ auto_ready_count }} 条；每一行 OCR 都按独立操作处理。</p>
+  </div>
+  <div class="actions">
+    <form method="post" action="/candidates/sync-nav"><button class="btn" type="submit">补净值并重算</button></form>
+    <form method="post" action="/candidates/auto-post"><button class="btn primary" type="submit">一键自动入账</button></form>
+  </div>
+</div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+
+<section class="panel actions">
+  <a class="btn small" href="/candidates">全部</a>
+  <a class="btn small" href="/candidates?status=auto_ready">可自动</a>
+  <a class="btn small" href="/candidates?status=needs_review">待修正</a>
+  <a class="btn small" href="/candidates?status=event">事件</a>
+  <a class="btn small" href="/candidates?status=posted">已入账</a>
+  <a class="btn small" href="/candidates?status=ignored">已忽略</a>
+</section>
+
+<section class="stack">
+  {% for c in candidates %}
+  <article class="panel stack">
+    <div class="actions" style="justify-content:space-between">
+      <div>
+        <strong>#{{ c.id }}</strong>
+        <span class="badge">{{ c.status.value }}</span>
+        <span class="badge">{{ c.row_status.value }}</span>
+        {% if c.review_reason %}<span class="muted">{{ c.review_reason }}</span>{% endif %}
+      </div>
+      <div class="actions">
+        <form method="post" action="/candidates/{{ c.id }}/post"><button class="btn small primary" type="submit">确认入账</button></form>
+        <form method="post" action="/candidates/{{ c.id }}/ignore"><button class="btn small" type="submit">忽略</button></form>
+      </div>
+    </div>
+    <form class="form-grid" method="post" action="/candidates/{{ c.id }}/update">
+      <label>基金代码<input name="fund_code" value="{{ c.fund_code }}"></label>
+      <label>基金名称<input name="fund_name" value="{{ c.fund_name }}"></label>
+      <label>类型
+        <select name="fund_type">
+          {% for value in ["open_fund","etf","money_fund","unknown"] %}
+          <option value="{{ value }}" {% if c.fund_type.value == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>动作
+        <select name="action">
+          <option value="">-</option>
+          {% for value in ["buy","sell","dividend","dividend_reinvest"] %}
+          <option value="{{ value }}" {% if c.action and c.action.value == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>行状态
+        <select name="row_status">
+          {% for value in ["success","cancelled","failed","unknown"] %}
+          <option value="{{ value }}" {% if c.row_status.value == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>交易日<input name="trade_date" value="{{ c.trade_date or '' }}" placeholder="2024-01-02"></label>
+      <label>提交时间<input name="submitted_at" value="{{ c.submitted_at or '' }}" placeholder="14:30:00"></label>
+      <label>金额<input name="amount_cny" value="{{ c.amount_cny if c.amount_cny is not none else '' }}"></label>
+      <label>份额<input name="share" value="{{ c.share if c.share is not none else '' }}"></label>
+      <label>净值<input name="nav" value="{{ c.nav if c.nav is not none else '' }}"></label>
+      <label>费用<input name="fee" value="{{ c.fee if c.fee is not none else '' }}"></label>
+      <div class="actions"><button class="btn" type="submit">保存修正</button></div>
+    </form>
+    {% set issue_rows = issues_by_candidate.get(c.id, []) %}
+    {% if issue_rows %}
+    <div class="actions">
+      {% for item in issue_rows %}
+      <span class="badge" title="{{ item.code }}">{{ item.message }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="sample">{{ c.raw_text }}</div>
+  </article>
+  {% else %}
+  <section class="panel muted">没有候选。</section>
+  {% endfor %}
+</section>
+{% endblock %}

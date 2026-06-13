@@ -201,6 +201,38 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
 .health-info { border-left-color: var(--accent); }
 .rule-detail { border-top: 1px solid var(--line); padding-top: 12px; }
 .sample { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+.ledger-group { padding: 0; overflow: hidden; }
+.ledger-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+.ledger-summary::-webkit-details-marker { display: none; }
+.ledger-summary::marker { content: ""; font-size: 0; }
+.ledger-title { flex: 1 1 auto; font-weight: 700; min-width: 0; }
+.ledger-toggle {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--input-bg);
+}
+.ledger-toggle::before {
+  content: "⌄";
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+.ledger-group[open] .ledger-toggle::before { transform: rotate(180deg); }
+.ledger-group .table-wrap { border-left: 0; border-right: 0; border-bottom: 0; border-radius: 0; }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
 .chart-card { display: grid; gap: 12px; }
 .chart-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }

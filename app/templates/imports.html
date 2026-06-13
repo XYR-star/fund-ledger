@@ -4,53 +4,114 @@
 <div class="page-title">
   <div>
     <h1>导入文档</h1>
-    <p class="muted">共 {{ total }} 个 · {{ ocr_done }} 已完成 OCR · {{ pending }} 待处理</p>
+    <p class="muted">共 {{ total }} 个 · {{ ocr_done }} 已完成 OCR · {{ pending }} 待 OCR</p>
   </div>
   <div class="actions">
-    <a class="btn" href="/imports{% if show != 'all' %}?show=all{% endif %}">{{ "只看有效" if show == "all" else "显示全部" }}</a>
-    <form method="post" action="/imports/ocr-all" style="display:inline">
-      <button class="btn primary" type="submit">{% if pending %}一键 OCR ({{ pending }}){% else %}一键 OCR{% endif %}</button>
-    </form>
+    {% if ocr_doc_ids %}
+    <button id="ocr-all" class="btn primary" type="button" data-doc-ids='{{ ocr_doc_ids|tojson }}'>一键 OCR ({{ ocr_doc_ids|length }})</button>
+    {% endif %}
     <a class="btn primary" href="/upload">上传</a>
-    {% if ocr_done %}
-    <form method="post" action="/imports/save-all-ocr" style="display:inline">
-      <button class="btn" type="submit">保存所有 OCR</button>
-    </form>
-    {% endif %}
-    {% if total %}
-    <form method="post" action="/imports/delete-all" style="display:inline" onsubmit="return confirm('确定删除所有导入？')">
-      <button class="btn danger" type="submit">删除全部</button>
-    </form>
-    {% endif %}
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
-
-<section class="panel stack">
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>OCR</th><th>时间</th><th>操作</th></tr></thead>
-      <tbody>
-        {% for doc in documents %}
-        <tr>
-          <td><a href="/imports/{{ doc.id }}">#{{ doc.id }}</a></td>
-          <td>{{ doc.file_name or "手动文本" }}</td>
-          <td><span class="badge">{{ doc.status.value }}</span></td>
-          <td>{{ doc.ocr_text[:30] if doc.ocr_text else "-" }}</td>
-          <td>{{ doc.created_at.strftime("%m-%d %H:%M") }}</td>
-          <td>
-            <a class="btn" style="padding:2px 8px;font-size:12px" href="/imports/{{ doc.id }}">查看</a>
-            <form method="post" action="/imports/{{ doc.id }}/delete" style="display:inline" onsubmit="return confirm('确定删除？')">
-              <button class="btn" style="padding:2px 8px;font-size:12px" type="submit">删除</button>
-            </form>
-            {% if doc.error_message %}
-            <span class="muted" style="font-size:11px">{{ doc.error_message[:30] }}</span>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+<section id="ocr-progress" class="panel stack hidden">
+  <div class="actions" style="justify-content:space-between">
+    <strong id="ocr-progress-title">OCR 中</strong>
+    <span class="muted" id="ocr-progress-count"></span>
   </div>
+  <progress id="ocr-progress-bar" value="0" max="100" style="width:100%"></progress>
+  <div id="ocr-progress-log" class="sample"></div>
 </section>
+
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>错误</th><th>创建时间</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for doc in documents %}
+      <tr>
+        <td><a href="/imports/{{ doc.id }}">#{{ doc.id }}</a></td>
+        <td>{{ doc.file_name or "粘贴文本" }}</td>
+        <td><span class="badge">{{ doc.status.value }}</span></td>
+        <td class="muted">{{ doc.error_message[:80] if doc.error_message else "-" }}</td>
+        <td>{{ doc.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td>
+          <div class="actions">
+            <a class="btn small" href="/imports/{{ doc.id }}">查看</a>
+            {% if doc.source_file %}
+            <form method="post" action="/imports/{{ doc.id }}/rerun-ocr">
+              <button class="btn small" type="submit">{{ "重跑 OCR" if doc.status.value in ["ocr_done", "parsed", "error"] else "OCR" }}</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/imports/{{ doc.id }}/delete" onsubmit="return confirm('删除这个导入文档和它的 OCR 行/候选？已入账的导入不会被删除。')">
+              <button class="btn small danger" type="submit">删除</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">还没有导入文档。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+<script>
+  (() => {
+    const button = document.querySelector("#ocr-all");
+    if (!button) return;
+    const box = document.querySelector("#ocr-progress");
+    const title = document.querySelector("#ocr-progress-title");
+    const count = document.querySelector("#ocr-progress-count");
+    const bar = document.querySelector("#ocr-progress-bar");
+    const log = document.querySelector("#ocr-progress-log");
+    button.addEventListener("click", async () => {
+      const ids = JSON.parse(button.dataset.docIds || "[]");
+      if (!ids.length) return;
+      button.disabled = true;
+      box.classList.remove("hidden");
+      const concurrency = 10;
+      const failed = [];
+      let candidates = 0;
+      let posted = 0;
+      let events = 0;
+      let skipped = 0;
+      let completed = 0;
+      let next = 0;
+      const update = () => {
+        count.textContent = `${completed} / ${ids.length}`;
+        bar.value = Math.round((completed / ids.length) * 100);
+        log.textContent = failed.length ? failed.slice(-8).join("\n") : `候选 ${candidates} 条，自动入账 ${posted} 条，事件 ${events} 条，跳过 ${skipped} 条。`;
+      };
+      title.textContent = `OCR 中，并发 ${Math.min(concurrency, ids.length)}`;
+      update();
+      const worker = async () => {
+        while (next < ids.length) {
+          const id = ids[next];
+          next += 1;
+          title.textContent = `OCR 中，并发 ${Math.min(concurrency, ids.length)}，正在处理 #${id}`;
+          try {
+            const response = await fetch(`/imports/${id}/ocr-json`, { method: "POST", credentials: "same-origin" });
+            const payload = await response.json();
+            if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+            candidates += payload.candidates || 0;
+            posted += payload.posted || 0;
+            events += payload.events || 0;
+            skipped += payload.skipped || 0;
+          } catch (error) {
+            failed.push(`#${id}: ${error.message}`);
+          } finally {
+            completed += 1;
+            update();
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, worker));
+      bar.value = 100;
+      title.textContent = failed.length ? "部分 OCR 失败" : "OCR 完成";
+      count.textContent = `${ids.length - failed.length} / ${ids.length}`;
+      setTimeout(() => {
+        window.location.href = `/imports?message=${encodeURIComponent(`OCR 完成 ${ids.length - failed.length} 个，失败 ${failed.length} 个，候选 ${candidates} 条，自动入账 ${posted} 条，事件 ${events} 条，跳过 ${skipped} 条`)}`;
+      }, failed.length ? 2200 : 700);
+    });
+  })();
+</script>
 {% endblock %}

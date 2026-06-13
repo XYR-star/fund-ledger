@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}事件 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title"><div><h1>非资金事件</h1><p class="muted">撤销、失败、分红方式和定投设置都保留在这里。</p></div></div>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>时间</th><th>类型</th><th>基金</th><th>金额</th><th>原始行</th></tr></thead>
+    <tbody>
+      {% for e in events %}
+      <tr><td>{{ e.event_date or e.created_at.date() }}</td><td>{{ e.event_type.value }}</td><td>{{ e.fund_name }} {{ e.fund_code }}</td><td>{{ e.amount_cny or "-" }}</td><td class="sample">{{ e.raw_text }}</td></tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">没有事件。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

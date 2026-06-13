@@ -1,54 +1,15 @@
 {% extends "base.html" %}
 {% block title %}设置 - Fund Ledger{% endblock %}
 {% block content %}
-<div class="page-title">
-  <div>
-    <h1>设置</h1>
-    <p class="muted">密钥留空表示保留当前值。</p>
-  </div>
-</div>
+<div class="page-title"><div><h1>设置</h1><p class="muted">OCR 后端固定为百度表格 OCR。</p></div></div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
-
-<form class="stack" method="post" action="/settings">
-  <section class="panel stack">
-    <h2>OCR 后端</h2>
-    <div class="form-grid">
-      <label>启用
-        <select name="ocr_enabled">
-          <option value="on" {% if config.OCR_ENABLED == "true" %}selected{% endif %}>启动</option>
-          <option value="off" {% if config.OCR_ENABLED != "true" %}selected{% endif %}>停止</option>
-        </select>
-      </label>
-      <label>后端
-        <select name="ocr_backend">
-          <option value="baidu_table" {% if config.OCR_BACKEND == "baidu_table" %}selected{% endif %}>百度表格 OCR（推荐）</option>
-          <option value="rapidocr" {% if config.OCR_BACKEND == "rapidocr" %}selected{% endif %}>本地 RapidOCR</option>
-          <option value="api" {% if config.OCR_BACKEND == "api" %}selected{% endif %}>通用 OCR API</option>
-        </select>
-      </label>
-      <label>状态
-        <input value="{{ '已启用' if config.OCR_ENABLED == 'true' else '已停止' }} · {{ config.OCR_BACKEND }}" disabled>
-      </label>
-    </div>
-  </section>
-
-  <section class="panel stack">
-    <h2>百度 OCR（表格识别）</h2>
-    <div class="form-grid">
-      <label>API Key
-        <input type="password" name="baidu_ocr_api_key" placeholder="{{ masked(config.BAIDU_OCR_API_KEY) }}" autocomplete="off">
-      </label>
-      <label>Secret Key
-        <input type="password" name="baidu_ocr_secret_key" placeholder="{{ masked(config.BAIDU_OCR_SECRET_KEY) }}" autocomplete="off">
-      </label>
-      <label>状态
-        <input value="{{ '已配置' if configured(config.BAIDU_OCR_API_KEY) and configured(config.BAIDU_OCR_SECRET_KEY) else '未配置' }}" disabled>
-      </label>
-    </div>
-  </section>
-
-  <div class="actions">
-    <button class="btn primary" type="submit">保存设置</button>
-  </div>
-</form>
+<section class="panel stack">
+  <form class="stack" method="post" action="/settings">
+    <label><span><input type="checkbox" name="ocr_enabled" {% if config.OCR_ENABLED in [true, "true", "True", "1"] %}checked{% endif %} style="width:auto"> 启用 OCR</span></label>
+    <label>百度 API Key<input name="baidu_ocr_api_key" placeholder="{{ masked(config.BAIDU_OCR_API_KEY) }}"></label>
+    <label>百度 Secret Key<input name="baidu_ocr_secret_key" placeholder="{{ masked(config.BAIDU_OCR_SECRET_KEY) }}"></label>
+    <label>表格 OCR Endpoint<input name="baidu_table_ocr_endpoint" value="{{ config.BAIDU_TABLE_OCR_ENDPOINT }}"></label>
+    <button class="btn primary" type="submit">保存</button>
+  </form>
+</section>
 {% endblock %}

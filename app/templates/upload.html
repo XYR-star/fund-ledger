@@ -1,26 +1,77 @@
 {% extends "base.html" %}
 {% block title %}上传 - Fund Ledger{% endblock %}
 {% block content %}
-
 <div class="page-title">
   <div>
-    <h1>上传交易记录</h1>
-    <p class="muted">支持批量上传截图或 PDF；上传后请在导入详情中手动运行 OCR 和解析。</p>
+    <h1>上传截图</h1>
+    <p class="muted">截图走百度表格 OCR；粘贴文本可用于临时调试。</p>
   </div>
 </div>
 
 <section class="panel stack">
-  <form class="stack" method="post" action="/upload" enctype="multipart/form-data">
-    <label>截图 / PDF 附件
-      <input type="file" name="files" accept="image/*,.pdf" multiple>
+  <form id="upload-form" class="stack" method="post" action="/upload" enctype="multipart/form-data">
+    <label>基金公司官网截图
+      <input id="file-input" type="file" name="files" accept="image/*" multiple>
     </label>
-    <label>交易文本
-      <textarea name="raw_text" placeholder="2024-01-02 161725 招商中证白酒 buy 1000 - 1.2345 1.00"></textarea>
+    <label>OCR 文本
+      <textarea name="raw_text" placeholder="2024-01-02 14:30:00 成功 易方达蓝筹精选混合 买入 金额1000元"></textarea>
     </label>
-    <p class="sample">可一次选择多个文件。文本框适合临时粘贴交易文本；上传后到导入列表点击 OCR 识别。</p>
     <div class="actions">
       <button class="btn primary" type="submit">上传</button>
+      <a class="btn" href="/imports">导入列表</a>
     </div>
   </form>
+  <div id="upload-progress" class="hidden stack">
+    <div class="actions" style="justify-content:space-between">
+      <strong id="upload-progress-title">上传中</strong>
+      <span class="muted" id="upload-progress-count"></span>
+    </div>
+    <progress id="upload-progress-bar" value="0" max="100" style="width:100%"></progress>
+    <div id="upload-progress-log" class="sample"></div>
+  </div>
 </section>
+<script>
+  (() => {
+    const form = document.querySelector("#upload-form");
+    const input = document.querySelector("#file-input");
+    const box = document.querySelector("#upload-progress");
+    const title = document.querySelector("#upload-progress-title");
+    const count = document.querySelector("#upload-progress-count");
+    const bar = document.querySelector("#upload-progress-bar");
+    const log = document.querySelector("#upload-progress-log");
+
+    form?.addEventListener("submit", async (event) => {
+      const files = Array.from(input?.files || []);
+      const rawText = form.querySelector("textarea[name='raw_text']")?.value?.trim();
+      if (rawText || files.length <= 1) return;
+      event.preventDefault();
+      box.classList.remove("hidden");
+      form.querySelector("button[type='submit']").disabled = true;
+      const failed = [];
+      for (let i = 0; i < files.length; i += 1) {
+        const file = files[i];
+        title.textContent = `上传 ${file.name}`;
+        count.textContent = `${i + 1} / ${files.length}`;
+        bar.value = Math.round((i / files.length) * 100);
+        const data = new FormData();
+        data.append("file", file);
+        try {
+          const response = await fetch("/upload/single", { method: "POST", body: data, credentials: "same-origin" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          if (!payload.ok) throw new Error(payload.error || "上传失败");
+        } catch (error) {
+          failed.push(`${file.name}: ${error.message}`);
+        }
+        log.textContent = failed.length ? failed.join("\n") : "已上传的文件会出现在导入列表。";
+      }
+      bar.value = 100;
+      title.textContent = failed.length ? "部分上传失败" : "上传完成";
+      count.textContent = `${files.length - failed.length} / ${files.length}`;
+      setTimeout(() => {
+        window.location.href = `/imports?message=${encodeURIComponent(`已上传 ${files.length - failed.length} 个导入，失败 ${failed.length} 个`)}`;
+      }, failed.length ? 1800 : 500);
+    });
+  })();
+</script>
 {% endblock %}

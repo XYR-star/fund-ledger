@@ -4,48 +4,67 @@
 <div class="page-title">
   <div>
     <h1>导入 #{{ document.id }}</h1>
-    <p class="muted">{{ document.file_name or "手动输入" }} · {{ document.status.value }}</p>
+    <p class="muted">{{ document.file_name or "粘贴文本" }} · {{ document.status.value }}</p>
   </div>
   <div class="actions">
-    <a class="btn" href="/imports">返回列表</a>
-    <form method="post" action="/imports/{{ document.id }}/archive" style="display:inline">
-      <button class="btn" type="submit">归档</button>
-    </form>
-    <form method="post" action="/imports/{{ document.id }}/delete" style="display:inline" onsubmit="return confirm('确定删除？')">
-      <button class="btn danger" type="submit">删除</button>
-    </form>
+    {% if document.source_file %}<form method="post" action="/imports/{{ document.id }}/ocr"><button class="btn primary" type="submit">运行 OCR</button></form>{% endif %}
+    {% if document.source_file %}<form method="post" action="/imports/{{ document.id }}/rerun-ocr"><button class="btn" type="submit">重跑 OCR</button></form>{% endif %}
+    <form method="post" action="/imports/{{ document.id }}/parse"><button class="btn" type="submit">重新解析</button></form>
+    <form method="post" action="/imports/{{ document.id }}/auto-post"><button class="btn primary" type="submit">自动入账本文件</button></form>
+    <form method="post" action="/imports/{{ document.id }}/delete" onsubmit="return confirm('删除这个导入文档和它的 OCR 行/候选？已入账的导入不会被删除。')"><button class="btn danger" type="submit">删除文件</button></form>
+    <a class="btn" href="/candidates">候选</a>
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
-{% if document.error_message %}
-<section class="panel error">{{ document.error_message }}</section>
-{% endif %}
+
+<section class="panel actions">
+  <span class="badge">候选 {{ stats.total }}</span>
+  <span class="badge">可自动 {{ stats.auto_ready }}</span>
+  <span class="badge">需确认 {{ stats.needs_review }}</span>
+  <span class="badge">事件 {{ stats.event }}</span>
+  <span class="badge">已入账 {{ stats.posted }}</span>
+</section>
 
 <section class="panel stack">
-  <h2>操作</h2>
-  <div class="actions">
-    {% if document.source_file %}
-    <form method="post" action="/imports/{{ document.id }}/ocr">
-      <button class="btn primary" type="submit">OCR 识别</button>
-    </form>
-    {% endif %}
-    {% if document.ocr_text %}
-    <form method="post" action="/imports/{{ document.id }}/save-ocr" style="display:inline">
-      <button class="btn" type="submit">保存 OCR 结果</button>
-    </form>
-    {% endif %}
+  <h2>OCR 行</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>行号</th><th>原始文本</th><th>Hash</th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+        <tr><td>{{ row.row_index }}</td><td>{{ row.raw_text }}</td><td class="sample">{{ row.row_hash[:12] }}</td></tr>
+        {% else %}
+        <tr><td colspan="3" class="muted">还没有 OCR 行。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
-  <p class="muted">状态: {{ document.status.value }} · OCR 后端：{{ ocr_backend }}</p>
 </section>
 
-{% if document.ocr_text or document.source_file %}
-<section class="panel stack" style="margin-top:16px">
-  <h2>OCR 结果</h2>
-  {% if document.ocr_text %}
-  <pre style="max-height:400px;overflow:auto;font-size:12px;line-height:1.4;white-space:pre-wrap">{{ document.ocr_text }}</pre>
-  {% else %}
-  <p class="muted">尚未 OCR</p>
-  {% endif %}
+<section class="panel stack">
+  <h2>候选</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>状态</th><th>基金</th><th>动作</th><th>日期</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th><th>原因</th></tr></thead>
+      <tbody>
+        {% for c in candidates %}
+        <tr>
+          <td><a href="/candidates">#{{ c.id }}</a></td>
+          <td><span class="badge">{{ c.status.value }}</span></td>
+          <td>{{ c.fund_name }} {{ c.fund_code }}</td>
+          <td>{{ c.action.value if c.action else c.event_type.value if c.event_type else "-" }}</td>
+          <td>{{ c.trade_date or "-" }}</td>
+          <td>{{ c.amount_cny if c.amount_cny is not none else "-" }}</td>
+          <td>{{ c.share if c.share is not none else "-" }}</td>
+          <td>{{ c.nav if c.nav is not none else "-" }}</td>
+          <td>{{ c.fee if c.fee is not none else "-" }}</td>
+          <td class="muted">{{ c.review_reason }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="muted">还没有候选。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
-{% endif %}
 {% endblock %}

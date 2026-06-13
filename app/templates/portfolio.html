@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}持仓 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>场外基金持仓</h1>
+    <p class="muted">持仓 {{ open_funds|length }} 只 · 总市值 {{ total_value }} · 总盈亏 {{ total_pl }}</p>
+  </div>
+  <div class="actions">
+    <a class="btn" href="/ledger">流水表</a>
+  </div>
+</div>
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+
+{% if open_funds %}
+<section class="panel stack" style="margin-top:16px">
+  <h2>持仓基金</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>基金名称</th><th>代码</th><th>份额</th><th>均价</th><th>成本</th><th>市值</th><th>浮盈</th><th>浮盈%</th><th>已实现盈亏</th><th>总盈亏</th>
+      </tr></thead>
+      <tbody>
+        {% for f in open_funds %}
+        <tr>
+          <td>{{ f.name[:24] }}</td>
+          <td>{{ f.code }}</td>
+          <td>{{ f.shares }}</td>
+          <td>{{ f.avg_cost }}</td>
+          <td>{{ f.cost }}</td>
+          <td>{{ f.value }}</td>
+          <td style="color:{{ 'red' if f.unrealized_pl > 0 else 'green' if f.unrealized_pl < 0 else 'inherit' }}">{{ f.unrealized_pl }}</td>
+          <td style="color:{{ 'red' if f.pl_rate > 0 else 'green' if f.pl_rate < 0 else 'inherit' }}">{{ f.pl_rate }}%</td>
+          <td>{{ f.realized_pl }}</td>
+          <td>{{ f.total_pl }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if closed_funds %}
+<section class="panel stack" style="margin-top:16px">
+  <h2>已清仓</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>基金名称</th><th>代码</th><th>已实现盈亏</th><th>最后交易</th>
+      </tr></thead>
+      <tbody>
+        {% for f in closed_funds %}
+        <tr>
+          <td>{{ f.name[:24] }}</td>
+          <td>{{ f.code }}</td>
+          <td>{{ f.realized_pl }}</td>
+          <td>{{ f.last_trade }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if not open_funds and not closed_funds %}
+<section class="panel"><p class="muted">暂无持仓数据，请先到流水表清洗并提取。</p></section>
+{% endif %}
+{% endblock %}

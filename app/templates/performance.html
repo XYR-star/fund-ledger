@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}收益曲线 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div>
+    <h1>收益曲线</h1>
+    <p class="muted">持仓市值走势 vs 沪深300；虚线为沪深300基准</p>
+  </div>
+  <div class="actions">
+    <form method="post" action="/performance/benchmark/sync">
+      <button class="btn" type="submit">同步沪深300</button>
+    </form>
+    <a class="btn" href="/nav">同步净值</a>
+  </div>
+</div>
+
+{% if message %}<section class="panel">{{ message }}</section>{% endif %}
+
+{% if aggregate_charts %}
+<div class="chart-grid">
+  {% for chart in aggregate_charts %}
+  <section class="panel chart-card" style="{% if chart.fund_code == 'TOTAL' %}border:2px solid var(--accent);grid-column:1/-1{% endif %}">
+    <div class="chart-head">
+      <div>
+        <h2>{{ chart.fund_name }}</h2>
+        <p class="muted">{{ chart.start_date }} 至 {{ chart.end_date }}</p>
+      </div>
+      <div class="chart-metrics">
+        <span class="badge">市值 ¥{{ "%.0f"|format(chart.fund_points[-1].value) if chart.fund_points else "-" }}</span>
+        <span class="badge">收益率 {{ "%.2f"|format(chart.latest_return * 100) if chart.latest_return is not none else "-" }}%</span>
+      </div>
+    </div>
+    <div class="chart-wrap" style="{% if chart.fund_code == 'TOTAL' %}height:300px{% endif %}">
+      <svg class="performance-chart" viewBox="0 0 100 100" preserveAspectRatio="none">
+        {% for tick in chart.y_ticks %}
+        <line class="chart-grid-line" x1="0" y1="{{ tick.y }}" x2="100" y2="{{ tick.y }}"/>
+        {% endfor %}
+        {% if chart.svg_area %}<path class="chart-area fund-fill" d="{{ chart.svg_area }}"/>{% endif %}
+        <path class="chart-line fund-line" d="{{ chart.svg_path }}"/>
+      </svg>
+      <div class="chart-axis">
+        {% for tick in chart.y_ticks %}
+        <span style="top: {{ tick.y }}%">{{ tick.label }}</span>
+        {% endfor %}
+      </div>
+      {% if chart.x_ticks %}
+      <div class="chart-xaxis">
+        {% for tick in chart.x_ticks %}
+        <span style="left: {{ tick.x }}%">{{ tick.label }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if charts %}
+<div class="chart-grid">
+  {% for chart in charts %}
+  <section class="panel chart-card">
+    <div class="chart-head">
+      <div>
+        <h2>{{ chart.fund_code }} {{ chart.fund_name }}</h2>
+        <p class="muted">{{ chart.start_date }} 至 {{ chart.end_date }}</p>
+      </div>
+      <div class="chart-metrics">
+        <span class="badge">基金 {{ "%.1f"|format(chart.latest_return * 100) if chart.latest_return is not none else "-" }}%</span>
+        {% if chart.benchmark_return is not none %}
+        <span class="badge">基准 {{ "%.1f"|format(chart.benchmark_return * 100) }}%</span>
+        <span class="badge">超额 {{ "%.1f"|format(chart.excess_return * 100) if chart.excess_return is not none else "-" }}%</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <svg class="performance-chart" viewBox="0 0 100 100" preserveAspectRatio="none">
+        {% for tick in chart.y_ticks %}
+        <line class="chart-grid-line" x1="0" y1="{{ tick.y }}" x2="100" y2="{{ tick.y }}"/>
+        {% endfor %}
+        {% if chart.benchmark_area %}<path class="chart-area benchmark-fill" d="{{ chart.benchmark_area }}"/>{% endif %}
+        {% if chart.benchmark_path %}<path class="chart-line benchmark-line" d="{{ chart.benchmark_path }}"/>{% endif %}
+        {% if chart.svg_area %}<path class="chart-area fund-fill" d="{{ chart.svg_area }}"/>{% endif %}
+        <path class="chart-line fund-line" d="{{ chart.svg_path }}"/>
+        {% for marker in chart.marker_positions %}
+        <circle class="{{ marker.action }}-marker" cx="{{ marker.x }}" cy="{{ marker.y }}" r="1.6">
+          <title>{{ marker.date }} {% if marker.action == "sell" %}卖出{% else %}买入{% endif %}{% if marker.amount %} ¥{{ "%.2f"|format(marker.amount) }}{% endif %}</title>
+        </circle>
+        {% endfor %}
+      </svg>
+      <div class="chart-axis">
+        {% for tick in chart.y_ticks %}
+        <span style="top: {{ tick.y }}%">{{ tick.label }}</span>
+        {% endfor %}
+      </div>
+      {% if chart.x_ticks %}
+      <div class="chart-xaxis">
+        {% for tick in chart.x_ticks %}
+        <span style="left: {{ tick.x }}%">{{ tick.label }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="chart-legend">
+      <span><i class="legend-line fund"></i>基金</span>
+      <span><i class="legend-line benchmark"></i>沪深300</span>
+      {% if chart.marker_positions %}
+      <span><i class="legend-dot buy"></i>买入</span>
+      <span><i class="legend-dot sell"></i>卖出</span>
+      {% endif %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% else %}
+<section class="panel muted" style="text-align:center;padding:40px">
+  <p>暂无可绘制曲线。需要先 <a href="/nav">同步净值</a> 并 <a href="/performance/benchmark/sync"><button class="btn small" style="background:none;border:none;color:var(--accent);cursor:pointer;text-decoration:underline;padding:0">同步沪深300基准</button></a></p>
+</section>
+{% endif %}
+
+<style>
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.chart-card {
+  padding: 16px;
+}
+.chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+.chart-head h2 { margin: 0; font-size: 15px; }
+.chart-metrics { display: flex; gap: 6px; flex-wrap: wrap; }
+.chart-wrap {
+  position: relative;
+  width: 100%;
+  height: 220px;
+  background: var(--bg2);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.performance-chart {
+  width: 100%;
+  height: 100%;
+}
+.chart-grid-line {
+  stroke: var(--line);
+  stroke-width: 0.3;
+  stroke-dasharray: 3 4;
+}
+.fund-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.benchmark-line {
+  fill: none;
+  stroke: #94a3b8;
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+.fund-fill {
+  fill: var(--accent);
+  opacity: 0.08;
+}
+.benchmark-fill {
+  fill: #94a3b8;
+  opacity: 0.05;
+}
+.buy-marker { fill: var(--accent); opacity: 0.8; }
+.sell-marker { fill: var(--danger); opacity: 0.8; }
+.chart-axis {
+  position: absolute;
+  top: 4px; bottom: 4px; left: 0; right: 0;
+  pointer-events: none;
+}
+.chart-axis span {
+  position: absolute;
+  left: 6px;
+  transform: translateY(-50%);
+  font-size: 10px;
+  color: #888;
+}
+.chart-xaxis {
+  position: absolute;
+  bottom: 2px; left: 0; right: 0;
+  height: 18px;
+  pointer-events: none;
+}
+.chart-xaxis span {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: #666;
+  white-space: nowrap;
+}
+.chart-legend {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #888;
+}
+.chart-legend span { display: flex; align-items: center; gap: 4px; }
+.legend-line { display: inline-block; width: 18px; height: 2px; }
+.legend-line.fund { background: var(--accent); }
+.legend-line.benchmark { background: #94a3b8; }
+.legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.legend-dot.buy { background: var(--accent); }
+.legend-dot.sell { background: var(--danger); }
+</style>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}基金 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title"><div><h1>基金映射与规则</h1><p class="muted">别名用于把 OCR 噪声映射到基金代码。</p></div></div>
+<section class="panel stack">
+  <h2>新增别名</h2>
+  <form class="form-grid" method="post" action="/funds/alias">
+    <label>关键词<input name="keyword" required></label>
+    <label>基金代码<input name="fund_code" required></label>
+    <label>基金名称<input name="fund_name"></label>
+    <label>类型<select name="fund_type"><option value="open_fund">open_fund</option><option value="etf">etf</option><option value="money_fund">money_fund</option><option value="unknown">unknown</option></select></label>
+    <button class="btn primary" type="submit">保存</button>
+  </form>
+</section>
+<section class="table-wrap" style="margin-top:12px">
+  <table>
+    <thead><tr><th>关键词</th><th>代码</th><th>名称</th><th>类型</th><th>来源</th></tr></thead>
+    <tbody>{% for a in aliases %}<tr><td>{{ a.keyword }}</td><td>{{ a.fund_code }}</td><td>{{ a.fund_name }}</td><td>{{ a.fund_type.value }}</td><td>{{ a.source }}</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+<section class="table-wrap" style="margin-top:12px">
+  <table>
+    <thead><tr><th>代码</th><th>名称</th><th>类型</th><th>确认</th><th>Cutoff</th><th>买入费率</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for r in rules %}
+      <tr>
+        <td>{{ r.fund_code }}</td><td>{{ r.fund_name }}</td><td>{{ r.fund_type.value }}</td><td>T+{{ r.buy_confirm_days }}/T+{{ r.sell_confirm_days }}</td><td>{{ r.cutoff_time }}</td><td>{{ r.buy_fee_rate }}</td>
+        <td class="actions">
+          <form method="post" action="/fund-rules/{{ r.fund_code }}/sync"><button class="btn small" type="submit">同步规则</button></form>
+          <form method="post" action="/funds/{{ r.fund_code }}/sync-nav"><button class="btn small" type="submit">同步净值</button></form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

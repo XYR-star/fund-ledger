@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}流水表 - Fund Ledger{% endblock %}
 {% block content %}
+<div id="ledger-main" {% if extracting %}hx-get="/ledger" hx-trigger="every 3s" hx-select="#ledger-main" hx-swap="outerHTML"{% endif %}>
 <div class="page-title">
   <div>
     <h1>交易流水表</h1>
@@ -10,11 +11,13 @@
     <form method="post" action="/ledger/clean" style="display:inline">
       <button class="btn primary" type="submit">清洗</button>
     </form>
+    <a class="btn" href="/portfolio">持仓</a>
+    <a class="btn" href="/portfolio/export">导出场外基金 Excel</a>
     <a class="btn" href="/imports">返回导入</a>
   </div>
 </div>
 {% if message %}<section class="panel">{{ message }}</section>{% endif %}
-{% if extracting %}<section class="panel warn">⏳ 提取进行中，请稍后刷新页面查看结果</section>{% endif %}
+{% if extracting %}<section class="panel warn">⏳ 提取进行中，每 3 秒自动刷新，完成后会消失</section>{% endif %}
 
 {% set open_count = rows|selectattr("fund_type", "equalto", "open_fund")|list|length %}
 {% set etf_count = rows|selectattr("fund_type", "equalto", "etf")|list|length %}
@@ -71,4 +74,31 @@
   </div>
 </section>
 {% endfor %}
+
+{% if unmatched_names %}
+<section class="panel stack" style="margin-top:16px">
+  <h2>手动补代码（{{ unmatched_names|length }} 个基金需要代码）</h2>
+  <div class="table-wrap" style="max-height:300px;overflow:auto">
+    <table>
+      <thead><tr><th>基金名称</th><th>基金代码</th><th>操作</th></tr></thead>
+      <tbody>
+        {% for name in unmatched_names %}
+        <tr id="fund-code-row-{{ loop.index0 }}">
+          <td>{{ name[:35] }}</td>
+          <td>
+            <form method="post" action="/ledger/update-code" hx-post="/ledger/update-code" hx-target="#fund-code-row-{{ loop.index0 }}" hx-swap="outerHTML" style="display:flex;gap:4px">
+              <input name="code" placeholder="6位代码" style="width:90px" maxlength="6">
+              <input type="hidden" name="name" value="{{ name }}">
+              <button class="btn" style="padding:2px 8px;font-size:12px" type="submit">保存</button>
+            </form>
+          </td>
+          <td style="font-size:11px;color:var(--muted)" id="msg-{{ loop.index0 }}"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+</div>
 {% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="max-width:800px;margin:0 auto">
+  <h2>OCR 结果导出</h2>
+
+  <p style="color:#888;margin-bottom:24px">
+    当前有 <strong>{{ file_count }}</strong> 个已解析文件，共 <strong>{{ total_rows }}</strong> 行 OCR 识别数据。<br>
+    点击下载可导出为一个 Excel 文件，包含所有截图 OCR 识别出的表格行。
+  </p>
+
+  <div style="display:flex;gap:12px;align-items:center">
+    <a href="/ocr-export/download" style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-weight:500">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      下载 Excel (.xlsx)
+    </a>
+    <span style="font-size:13px;color:#888">包含所有 screenshots 的 OCR 行数据</span>
+  </div>
+
+  <div style="margin-top:32px;padding:16px;background:var(--bg2);border-radius:8px">
+    <h4 style="margin:0 0 8px">Excel 列说明</h4>
+    <table style="font-size:13px;width:100%">
+      <tr><td style="width:120px;padding:4px 0;color:#888">来源文件</td><td>OCR 解析的源截图文件名</td></tr>
+      <tr><td style="padding:4px 0;color:#888">基金名称</td><td>OCR 识别到的基金全称</td></tr>
+      <tr><td style="padding:4px 0;color:#888">操作</td><td>OCR 识别到的操作类型 (buy/sell/dividend/定投/强制调增...)</td></tr>
+      <tr><td style="padding:4px 0;color:#888">交易日期</td><td>OCR 识别到的日期</td></tr>
+      <tr><td style="padding:4px 0;color:#888">金额</td><td>OCR 识别到的金额 (¥)</td></tr>
+      <tr><td style="padding:4px 0;color:#888">份额</td><td>OCR 识别到的份额</td></tr>
+      <tr><td style="padding:4px 0;color:#888">状态</td><td>成功/已撤销/失败 等</td></tr>
+      <tr><td style="padding:4px 0;color:#888">提交时间</td><td>操作提交时间</td></tr>
+    </table>
+  </div>
+</div>
+{% endblock %}

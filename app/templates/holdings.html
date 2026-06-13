@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}持仓 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title"><div><h1>持仓</h1><p class="muted">仅统计场外非货币基金。</p></div></div>
+<section class="metrics">
+  <div class="metric"><span>市值</span><strong>{{ "%.2f"|format(totals.market_value) }}</strong></div>
+  <div class="metric"><span>成本</span><strong>{{ "%.2f"|format(totals.cost) }}</strong></div>
+  <div class="metric"><span>浮盈亏</span><strong>{{ "%.2f"|format(totals.profit) }}</strong></div>
+  <div class="metric"><span>已实现</span><strong>{{ "%.2f"|format(totals.realized) }}</strong></div>
+</section>
+<section class="table-wrap" style="margin-top:12px">
+  <table>
+    <thead><tr><th>基金</th><th>份额</th><th>成本</th><th>最新净值</th><th>市值</th><th>浮盈亏</th><th>收益率</th></tr></thead>
+    <tbody>
+      {% for p in holdings %}
+      <tr>
+        <td><a href="/funds/{{ p.fund_code }}">{{ p.fund_name }} {{ p.fund_code }}</a></td>
+        <td>{{ "%.4f"|format(p.share) }}</td><td>{{ "%.2f"|format(p.cost) }}</td><td>{{ p.latest_nav or "-" }}</td>
+        <td>{{ "%.2f"|format(p.market_value) }}</td><td>{{ "%.2f"|format(p.profit) }}</td><td>{{ "%.2f%%"|format(p.profit_rate * 100) if p.profit_rate is not none else "-" }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">暂无持仓。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
