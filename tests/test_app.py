@@ -716,7 +716,7 @@ def test_holdings_show_unit_cost(app_ctx):
     assert "1.2300" in response.text
 
 
-def test_position_cost_uses_fifo_and_cash_dividend_reduces_cost(app_ctx):
+def test_position_cost_uses_average_cost_and_cash_dividend_reduces_cost(app_ctx):
     main, db, _ = app_ctx
     from app.models import FundNav, FundTransaction, TransactionAction
 
@@ -773,11 +773,11 @@ def test_position_cost_uses_fifo_and_cash_dividend_reduces_cost(app_ctx):
 
         position = main.calculate_positions(session, include_closed=False)[0]
         assert position["share"] == 100
-        assert position["cost"] == 110
-        assert position["realized_profit"] == 10
-        assert position["profit"] == -10
+        assert position["cost"] == 100
+        assert position["realized_profit"] == 0
+        assert position["profit"] == 0
         assert position["total_profit"] == 0
-        assert position["unit_cost"] == 1.1
+        assert position["unit_cost"] == 1.0
 
 
 def test_holdings_label_holding_and_total_profit(app_ctx):
