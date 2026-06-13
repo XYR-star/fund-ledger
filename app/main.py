@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import hashlib
+import io
 import json
 import re
 from datetime import date, datetime, time, timedelta
@@ -24,6 +25,8 @@ from .models import (
     AppSetting,
     CandidateStatus,
     CandidateIssue,
+    EAccountHolding,
+    EAccountImport,
     EventType,
     FundAlias,
     FundEvent,
@@ -169,6 +172,45 @@ def ocr_export_redirect(_: str = Depends(require_user)):
 @app.get("/nav")
 def nav_redirect(_: str = Depends(require_user)):
     return redirect("/funds")
+
+
+@app.get("/eaccount", response_class=HTMLResponse)
+def eaccount_page(
+    request: Request,
+    message: str = "",
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    imports = session.exec(select(EAccountImport).order_by(desc(EAccountImport.imported_at))).all()
+    latest = imports[0] if imports else None
+    holdings = (
+        session.exec(select(EAccountHolding).where(EAccountHolding.import_id == latest.id).order_by(EAccountHolding.status.desc(), EAccountHolding.fund_code)).all()
+        if latest
+        else []
+    )
+    return templates.TemplateResponse(
+        "eaccount.html",
+        {"request": request, "message": message, "imports": imports, "latest": latest, "holdings": holdings},
+    )
+
+
+@app.post("/eaccount/import")
+async def eaccount_import(
+    file: UploadFile = File(...),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    if not file.filename:
+        return redirect("/eaccount?message=请选择基金 E 账户导出文件")
+    content = await file.read()
+    try:
+        result = import_eaccount_holdings(session, file.filename, content)
+    except ValueError as exc:
+        return redirect(f"/eaccount?message=导入失败: {quote(str(exc))}")
+    return redirect(
+        f"/eaccount?message=已导入 {result.row_count} 行，匹配 {result.matched_count} 行，"
+        f"差异 {result.mismatch_count} 行，缺失 {result.missing_count} 行"
+    )
 
 
 @app.get("/upload", response_class=HTMLResponse)
@@ -1048,6 +1090,130 @@ def build_platform_cards(session: Session, positions: list[dict]) -> list[dict]:
         card["realized"] += position["realized_profit"]
         card["total_profit"] += position["total_profit"]
     return sorted(cards.values(), key=lambda item: item["market_value"], reverse=True)
+
+
+def import_eaccount_holdings(session: Session, file_name: str, content: bytes) -> EAccountImport:
+    rows = read_eaccount_rows(file_name, content)
+    if not rows:
+        raise ValueError("没有识别到基金 E 账户持仓行")
+    imported = EAccountImport(file_name=file_name, source_hash=_hash_content(content), row_count=len(rows))
+    session.add(imported)
+    session.flush()
+    positions = {p["fund_code"]: p for p in calculate_positions(session, include_closed=False)}
+    matched = mismatch = missing = 0
+    for row in rows:
+        holding = build_eaccount_holding(imported.id, row, positions)
+        if holding.status == "matched":
+            matched += 1
+        elif holding.status == "missing":
+            missing += 1
+        else:
+            mismatch += 1
+        session.add(holding)
+    imported.matched_count = matched
+    imported.mismatch_count = mismatch
+    imported.missing_count = missing
+    session.add(imported)
+    session.commit()
+    session.refresh(imported)
+    return imported
+
+
+def read_eaccount_rows(file_name: str, content: bytes) -> list[dict]:
+    import pandas as pd
+
+    suffix = Path(file_name).suffix.lower()
+    stream = io.BytesIO(content)
+    if suffix in {".xlsx", ".xls"}:
+        dataframe = pd.read_excel(stream, dtype=str)
+    else:
+        try:
+            dataframe = pd.read_csv(stream, dtype=str, encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            stream.seek(0)
+            dataframe = pd.read_csv(stream, dtype=str, encoding="gbk")
+    dataframe = dataframe.dropna(how="all")
+    rows: list[dict] = []
+    for item in dataframe.to_dict(orient="records"):
+        row = normalize_eaccount_row(item)
+        if row.get("fund_code") or row.get("fund_name"):
+            rows.append(row)
+    return rows
+
+
+def normalize_eaccount_row(item: dict) -> dict:
+    def pick(*names: str):
+        normalized = {normalize_header(key): value for key, value in item.items()}
+        for name in names:
+            value = normalized.get(normalize_header(name))
+            if value not in (None, ""):
+                return value
+        return None
+
+    code = normalized_cell(pick("基金代码", "代码", "fund_code"))
+    code = re.sub(r"\D", "", code).zfill(6) if code else ""
+    return {
+        "fund_code": code,
+        "fund_name": normalized_cell(pick("基金名称", "名称", "fund_name")),
+        "share_category": normalized_cell(pick("份额类别", "类别")),
+        "manager": normalized_cell(pick("基金管理人", "管理人")),
+        "fund_account": normalized_cell(pick("基金账户")),
+        "sales_agency": normalized_cell(pick("销售机构", "机构")),
+        "trading_account": normalized_cell(pick("交易账户")),
+        "official_share": parse_float_cell(str(pick("持有份额", "份额", "当前份额"))),
+        "share_date": coerce_date(pick("份额日期", "持有日期")),
+        "nav": parse_float_cell(str(pick("基金净值", "单位净值", "净值"))),
+        "nav_date": coerce_date(pick("净值日期")),
+        "official_market_value": parse_float_cell(str(pick("资产情况(结算市值)", "资产情况", "市值", "最新市值"))),
+        "settlement_value": parse_float_cell(str(pick("结算市值", "结算资产"))),
+        "dividend_method": normalized_cell(pick("分红方式")),
+    }
+
+
+def normalize_header(value) -> str:
+    return re.sub(r"[\s_（）()]+", "", str(value or "")).lower()
+
+
+def build_eaccount_holding(import_id: int, row: dict, positions: dict[str, dict]) -> EAccountHolding:
+    code = row.get("fund_code") or ""
+    local = positions.get(code)
+    local_share = local["share"] if local else None
+    local_market = local["market_value"] if local else None
+    official_share = row.get("official_share")
+    official_market = row.get("settlement_value") if row.get("settlement_value") is not None else row.get("official_market_value")
+    share_diff = round_money((official_share or 0) - (local_share or 0)) if official_share is not None and local_share is not None else None
+    market_diff = round_money((official_market or 0) - (local_market or 0)) if official_market is not None and local_market is not None else None
+    issues: list[str] = []
+    if not local:
+        issues.append("系统缺少持仓")
+    if share_diff is not None and abs(share_diff) > 0.02:
+        issues.append(f"份额差异 {share_diff:.2f}")
+    if market_diff is not None and abs(market_diff) > 1.0:
+        issues.append(f"市值差异 {market_diff:.2f}")
+    status = "missing" if not local else ("mismatch" if issues else "matched")
+    return EAccountHolding(
+        import_id=import_id,
+        fund_code=code,
+        fund_name=row.get("fund_name") or (local["fund_name"] if local else ""),
+        share_category=row.get("share_category") or "",
+        manager=row.get("manager") or "",
+        fund_account=row.get("fund_account") or "",
+        sales_agency=row.get("sales_agency") or "",
+        trading_account=row.get("trading_account") or "",
+        official_share=official_share,
+        share_date=row.get("share_date"),
+        nav=row.get("nav"),
+        nav_date=row.get("nav_date"),
+        official_market_value=row.get("official_market_value"),
+        settlement_value=row.get("settlement_value"),
+        dividend_method=row.get("dividend_method") or "",
+        local_share=local_share,
+        local_market_value=local_market,
+        share_diff=share_diff,
+        market_value_diff=market_diff,
+        status=status,
+        issue_summary="；".join(issues) if issues else "匹配",
+    )
 
 
 def nav_sync_pz_for_fund(session: Session, fund_code: str, full_pz: int) -> int:

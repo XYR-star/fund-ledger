@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}基金 E 账户对账 - Fund Ledger{% endblock %}
+{% block content %}
+<div class="page-title">
+  <div><h1>基金 E 账户对账</h1><p class="muted">导入基金 E 账户持仓表，和系统当前持仓做份额/市值校验。</p></div>
+</div>
+{% if message %}
+<section class="panel" style="margin-bottom:12px">{{ message }}</section>
+{% endif %}
+<section class="panel stack">
+  <form method="post" action="/eaccount/import" enctype="multipart/form-data" class="actions">
+    <label class="file-inline">基金 E 账户表格
+      <input type="file" name="file" accept=".csv,.xlsx,.xls" required>
+    </label>
+    <button class="btn primary" type="submit">导入对账</button>
+  </form>
+</section>
+
+{% if latest %}
+<section class="metrics" style="margin-top:12px">
+  <div class="metric"><span>导入行数</span><strong>{{ latest.row_count }}</strong></div>
+  <div class="metric"><span>匹配</span><strong>{{ latest.matched_count }}</strong></div>
+  <div class="metric"><span>差异</span><strong>{{ latest.mismatch_count }}</strong></div>
+  <div class="metric"><span>缺失</span><strong>{{ latest.missing_count }}</strong></div>
+</section>
+<section class="table-wrap" style="margin-top:12px">
+  <table>
+    <thead>
+      <tr>
+        <th>状态</th><th>基金</th><th>官方份额</th><th>系统份额</th><th>份额差</th><th>官方市值</th><th>系统市值</th><th>市值差</th><th>净值日期</th><th>分红方式</th><th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in holdings %}
+      <tr>
+        <td><span class="badge status-{{ h.status }}">{{ h.status }}</span></td>
+        <td>{{ h.fund_name }} {{ h.fund_code }}</td>
+        <td>{{ "%.2f"|format(h.official_share) if h.official_share is not none else "-" }}</td>
+        <td>{{ "%.2f"|format(h.local_share) if h.local_share is not none else "-" }}</td>
+        <td>{{ "%.2f"|format(h.share_diff) if h.share_diff is not none else "-" }}</td>
+        <td>{{ "%.2f"|format(h.settlement_value if h.settlement_value is not none else h.official_market_value) if (h.settlement_value is not none or h.official_market_value is not none) else "-" }}</td>
+        <td>{{ "%.2f"|format(h.local_market_value) if h.local_market_value is not none else "-" }}</td>
+        <td>{{ "%.2f"|format(h.market_value_diff) if h.market_value_diff is not none else "-" }}</td>
+        <td>{{ h.nav_date or h.share_date or "-" }}</td>
+        <td>{{ h.dividend_method or "-" }}</td>
+        <td>{{ h.issue_summary }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="11" class="muted">暂无对账明细。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if imports %}
+<section class="table-wrap" style="margin-top:12px">
+  <table>
+    <thead><tr><th>历史导入</th><th>行数</th><th>匹配</th><th>差异</th><th>缺失</th><th>时间</th></tr></thead>
+    <tbody>
+      {% for item in imports %}
+      <tr><td>{{ item.file_name }}</td><td>{{ item.row_count }}</td><td>{{ item.matched_count }}</td><td>{{ item.mismatch_count }}</td><td>{{ item.missing_count }}</td><td>{{ item.imported_at }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

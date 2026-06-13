@@ -204,6 +204,42 @@ class FundNav(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=now_shanghai_naive)
 
 
+class EAccountImport(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    file_name: str = ""
+    source_hash: str = Field(default="", index=True)
+    row_count: int = 0
+    matched_count: int = 0
+    mismatch_count: int = 0
+    missing_count: int = 0
+    imported_at: datetime = Field(default_factory=now_shanghai_naive)
+
+
+class EAccountHolding(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    import_id: int = Field(index=True)
+    fund_code: str = Field(default="", index=True, max_length=6)
+    fund_name: str = ""
+    share_category: str = ""
+    manager: str = ""
+    fund_account: str = ""
+    sales_agency: str = ""
+    trading_account: str = ""
+    official_share: Optional[float] = None
+    share_date: Optional[date] = None
+    nav: Optional[float] = None
+    nav_date: Optional[date] = None
+    official_market_value: Optional[float] = None
+    settlement_value: Optional[float] = None
+    dividend_method: str = ""
+    local_share: Optional[float] = None
+    local_market_value: Optional[float] = None
+    share_diff: Optional[float] = None
+    market_value_diff: Optional[float] = None
+    status: str = Field(default="unknown", index=True)
+    issue_summary: str = ""
+
+
 class AppSetting(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: str = ""

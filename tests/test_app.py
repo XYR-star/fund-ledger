@@ -972,6 +972,96 @@ def test_holdings_show_manual_platform_cards(app_ctx):
     assert "持仓收益" in response.text
 
 
+def test_eaccount_import_reconciles_official_holdings(app_ctx):
+    main, db, client = app_ctx
+    from app.models import EAccountHolding, EAccountImport, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.commit()
+
+    csv = "\n".join(
+        [
+            "序号,基金代码,基金名称,份额类别,基金管理人,基金账户,销售机构,交易账户,持有份额,份额日期,基金净值,净值日期,资产情况(结算市值),结算市值,分红方式",
+            "1,005827,易方达蓝筹精选混合,A,易方达基金,FA001,易方达财富,中国银行,100.00,2024-01-02,2.50,2024-01-04,250.00,250.00,红利再投资",
+        ]
+    )
+    response = client.post(
+        "/eaccount/import",
+        files={"file": ("eaccount.csv", csv.encode("utf-8-sig"), "text/csv")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        imported = session.exec(select(EAccountImport)).one()
+        holding = session.exec(select(EAccountHolding)).one()
+        assert imported.row_count == 1
+        assert imported.matched_count == 1
+        assert imported.mismatch_count == 0
+        assert holding.status == "matched"
+        assert holding.local_share == 100
+        assert holding.share_diff == 0
+
+    page = client.get("/eaccount")
+    assert page.status_code == 200
+    assert "基金 E 账户对账" in page.text
+    assert "易方达蓝筹精选混合" in page.text
+    assert "matched" in page.text
+
+
+def test_eaccount_import_marks_mismatched_holdings(app_ctx):
+    main, db, client = app_ctx
+    from app.models import EAccountHolding, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.commit()
+
+    csv = "\n".join(
+        [
+            "基金代码,基金名称,持有份额,份额日期,基金净值,净值日期,结算市值,分红方式",
+            "005827,易方达蓝筹精选混合,98.00,2024-01-02,1.00,2024-01-02,98.00,红利再投资",
+        ]
+    )
+    response = client.post(
+        "/eaccount/import",
+        files={"file": ("eaccount.csv", csv.encode("utf-8"), "text/csv")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        holding = session.exec(select(EAccountHolding)).one()
+        assert holding.status == "mismatch"
+        assert holding.share_diff == -2.0
+        assert "份额差异" in holding.issue_summary
+
+
 def test_sell_without_prior_buy_is_marked_incomplete(app_ctx):
     main, db, _ = app_ctx
     from app.models import FundNav, FundTransaction, TransactionAction
@@ -1146,7 +1236,7 @@ def test_import_delete_removes_document_rows_and_candidates(app_ctx, tmp_path):
 def test_core_pages_render(app_ctx):
     _, _, client = app_ctx
 
-    for path in ["/candidates", "/imports", "/upload", "/transactions", "/events", "/holdings", "/charts", "/funds", "/settings"]:
+    for path in ["/candidates", "/imports", "/upload", "/transactions", "/events", "/holdings", "/charts", "/eaccount", "/funds", "/settings"]:
         response = client.get(path)
         assert response.status_code == 200, path
 
