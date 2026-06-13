@@ -1107,6 +1107,33 @@ def test_eaccount_versions_keep_each_import_and_can_be_reopened(app_ctx):
     assert "250.00" in first_page.text
 
 
+def test_eaccount_schema_migration_drops_removed_required_columns(app_ctx):
+    main, db, _ = app_ctx
+    from sqlmodel import text
+
+    with Session(db.engine) as session:
+        session.exec(text("ALTER TABLE eaccountholding ADD COLUMN share_category VARCHAR NOT NULL DEFAULT ''"))
+        session.exec(text("ALTER TABLE eaccountholding ADD COLUMN manager VARCHAR NOT NULL DEFAULT ''"))
+        session.exec(text("ALTER TABLE eaccountholding ADD COLUMN sales_agency VARCHAR NOT NULL DEFAULT ''"))
+        session.exec(text("ALTER TABLE eaccountholding ADD COLUMN trading_account VARCHAR NOT NULL DEFAULT ''"))
+        session.exec(text("ALTER TABLE eaccountholding ADD COLUMN dividend_method VARCHAR NOT NULL DEFAULT ''"))
+        session.commit()
+
+    db.migrate_eaccount_holding_schema()
+
+    with Session(db.engine) as session:
+        columns = [row[1] for row in session.exec(text("PRAGMA table_info(eaccountholding)")).all()]
+        assert "share_category" not in columns
+        assert "manager" not in columns
+
+        imported = main.import_eaccount_holdings(
+            session,
+            "eaccount.csv",
+            "基金代码,基金名称,持有份额\n005827,易方达蓝筹精选混合,100.00".encode("utf-8"),
+        )
+        assert imported.row_count == 1
+
+
 def test_sell_without_prior_buy_is_marked_incomplete(app_ctx):
     main, db, _ = app_ctx
     from app.models import FundNav, FundTransaction, TransactionAction
