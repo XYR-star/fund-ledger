@@ -32,7 +32,33 @@
   <div class="metric"><span>差异</span><strong>{{ latest.mismatch_count }}</strong></div>
   <div class="metric"><span>缺失</span><strong>{{ latest.missing_count }}</strong></div>
 </section>
-<section class="table-wrap" style="margin-top:12px">
+<section class="mobile-only mobile-list" style="margin-top:12px">
+  {% for h in holdings %}
+  <article class="mobile-card">
+    <div class="mobile-card-head">
+      <div>
+        <strong>{{ h.fund_name }}</strong>
+        <div class="muted">{{ h.fund_code }}</div>
+      </div>
+      <span class="badge status-{{ h.status }}">{{ h.status }}</span>
+    </div>
+    <div class="mobile-kv">
+      <span>官方份额</span><strong>{{ "%.2f"|format(h.official_share) if h.official_share is not none else "-" }}</strong>
+      <span>系统份额</span><strong>{{ "%.2f"|format(h.local_share) if h.local_share is not none else "-" }}</strong>
+      <span>份额差</span><strong>{{ "%.2f"|format(h.share_diff) if h.share_diff is not none else "-" }}</strong>
+      <span>官方市值</span><strong>{{ "%.2f"|format(h.settlement_value if h.settlement_value is not none else h.official_market_value) if (h.settlement_value is not none or h.official_market_value is not none) else "-" }}</strong>
+      <span>系统市值</span><strong>{{ "%.2f"|format(h.local_market_value) if h.local_market_value is not none else "-" }}</strong>
+      <span>市值差</span><strong>{{ "%.2f"|format(h.market_value_diff) if h.market_value_diff is not none else "-" }}</strong>
+      <span>净值日期</span><strong>{{ h.nav_date or h.share_date or "-" }}</strong>
+    </div>
+    <div class="muted mobile-note">{{ h.issue_summary }}</div>
+  </article>
+  {% else %}
+  <section class="panel muted">暂无对账明细。</section>
+  {% endfor %}
+</section>
+
+<section class="table-wrap mobile-hidden" style="margin-top:12px">
   <table>
     <thead>
       <tr>
@@ -62,7 +88,25 @@
 {% endif %}
 
 {% if imports %}
-<section class="table-wrap" style="margin-top:12px">
+<section class="mobile-only mobile-list" style="margin-top:12px">
+  {% for item in imports %}
+  <article class="mobile-card">
+    <div class="mobile-card-head">
+      <a class="mobile-card-title" href="/eaccount/{{ item.id }}">版本 #{{ item.id }}</a>
+      <span class="badge">{{ item.row_count }} 行</span>
+    </div>
+    <div class="mobile-kv">
+      <span>匹配</span><strong>{{ item.matched_count }}</strong>
+      <span>差异</span><strong>{{ item.mismatch_count }}</strong>
+      <span>缺失</span><strong>{{ item.missing_count }}</strong>
+      <span>时间</span><strong>{{ item.imported_at }}</strong>
+    </div>
+    <div class="sample mobile-raw">{{ item.file_name }}</div>
+  </article>
+  {% endfor %}
+</section>
+
+<section class="table-wrap mobile-hidden" style="margin-top:12px">
   <table>
     <thead><tr><th>版本</th><th>文件</th><th>行数</th><th>匹配</th><th>差异</th><th>缺失</th><th>时间</th></tr></thead>
     <tbody>

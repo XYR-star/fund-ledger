@@ -210,6 +210,33 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
 .rule-detail { border-top: 1px solid var(--line); padding-top: 12px; }
 .sample { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
 .manual-examples { white-space: pre-line; line-height: 1.7; }
+.mobile-only { display: none; }
+.mobile-list { gap: 10px; }
+.mobile-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.mobile-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.mobile-card-title { font-weight: 700; }
+.mobile-kv {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1.2fr);
+  gap: 7px 12px;
+  align-items: baseline;
+}
+.mobile-kv span { color: var(--muted); }
+.mobile-kv strong { text-align: right; font-weight: 650; overflow-wrap: anywhere; }
+.mobile-note { line-height: 1.5; }
+.mobile-raw { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ledger-group { padding: 0; overflow: hidden; }
 .ledger-summary {
   display: flex;
@@ -353,11 +380,18 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
   h1 { font-size: 20px; }
   .grid, .form-grid, .chart-grid, .metrics { grid-template-columns: 1fr; }
   .panel, .metrics .metric { padding: 12px; }
+  .metric { gap: 5px; }
+  .mobile-only { display: grid; }
+  .mobile-hidden { display: none; }
   table { min-width: 880px; }
   th, td { padding: 9px 10px; }
   .table-wrap { margin-left: -12px; margin-right: -12px; border-left: 0; border-right: 0; border-radius: 0; }
-  .actions { align-items: stretch; }
+  .actions { align-items: stretch; gap: 7px; }
   .actions .btn, .actions button { min-height: 38px; }
+  .page-title > .actions, .panel > .actions { width: 100%; }
+  .page-title > .actions .btn, .page-title > .actions button { flex: 1 1 auto; }
+  .ledger-summary { padding: 12px; align-items: flex-start; }
+  .ledger-title { min-width: 0; overflow-wrap: anywhere; }
   .chart-head { display: grid; }
   .chart-metrics { justify-content: flex-start; }
   .chart-wrap { height: 220px; }

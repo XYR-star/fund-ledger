@@ -14,7 +14,28 @@
     </span>
     <span class="ledger-toggle" aria-hidden="true"></span>
   </summary>
-  <div class="table-wrap">
+  <div class="mobile-only mobile-list">
+    {% for row in rows %}
+    <article class="mobile-card {{ 'muted' if row.kind == 'event' else '' }}">
+      <div class="mobile-card-head">
+        <div>
+          <strong>{{ row.date }}</strong>
+          <div class="muted">{{ row.action }}</div>
+        </div>
+        <span class="badge">{{ "事件" if row.kind == "event" else "交易" }}</span>
+      </div>
+      <div class="mobile-kv">
+        <span>金额</span><strong>{{ "%.2f"|format(row.amount_cny) if row.amount_cny is not none else "-" }}</strong>
+        <span>份额</span><strong>{{ "%.2f"|format(row.share) if row.share is not none else "-" }}</strong>
+        <span>净值</span><strong>{{ row.nav or "-" }}</strong>
+        <span>费用</span><strong>{{ row.fee if row.fee is not none else "-" }}</strong>
+        <span>确认日</span><strong>{{ row.confirm_date or "-" }}</strong>
+      </div>
+      {% if row.raw_text %}<div class="sample mobile-raw">{{ row.raw_text }}</div>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  <div class="table-wrap mobile-hidden">
     <table>
       <thead><tr><th>日期</th><th>类型</th><th>动作/事件</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th><th>确认日</th><th>原始行</th></tr></thead>
       <tbody>

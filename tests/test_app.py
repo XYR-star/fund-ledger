@@ -1896,6 +1896,53 @@ def test_core_pages_render(app_ctx):
         assert response.status_code == 200, path
 
 
+def test_iphone_mobile_card_views_render_for_key_pages(app_ctx):
+    main, db, client = app_ctx
+    from app.models import EAccountHolding, EAccountImport, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        imported = EAccountImport(file_name="snapshot.csv", row_count=1, matched_count=1)
+        session.add(imported)
+        session.flush()
+        session.add(
+            EAccountHolding(
+                import_id=imported.id,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                official_share=100,
+                local_share=100,
+                share_diff=0,
+                status="matched",
+                issue_summary="匹配",
+            )
+        )
+        session.commit()
+
+    holdings_page = client.get("/holdings")
+    transactions_page = client.get("/transactions")
+    eaccount_page = client.get("/eaccount")
+
+    assert 'class="mobile-only mobile-list"' in holdings_page.text
+    assert 'class="table-wrap mobile-hidden"' in holdings_page.text
+    assert 'class="mobile-card' in transactions_page.text
+    assert 'class="table-wrap mobile-hidden"' in transactions_page.text
+    assert 'class="mobile-only mobile-list"' in eaccount_page.text
+    assert "官方份额" in eaccount_page.text
+
+
 def test_funds_rules_table_keeps_table_cells_for_aligned_borders(app_ctx):
     _, _, client = app_ctx
 

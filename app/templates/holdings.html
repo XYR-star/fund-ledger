@@ -42,7 +42,30 @@
   </div>
 </section>
 {% endif %}
-<section class="table-wrap" style="margin-top:12px">
+<section class="mobile-only mobile-list" style="margin-top:12px">
+  {% for p in holdings %}
+  <article class="mobile-card">
+    <div class="mobile-card-head">
+      <a class="mobile-card-title" href="/funds/{{ p.fund_code }}">{{ p.fund_name }}</a>
+      <span class="badge">{{ p.fund_code }}</span>
+    </div>
+    <div class="mobile-kv">
+      <span>市值</span><strong>{{ "%.2f"|format(p.market_value) }}</strong>
+      <span>持仓收益</span><strong>{{ "%.2f"|format(p.profit) }}</strong>
+      <span>累计收益</span><strong>{{ "%.2f"|format(p.total_profit) }}</strong>
+      <span>收益率</span><strong>{{ "%.2f%%"|format(p.profit_rate * 100) if p.profit_rate is not none else "-" }}</strong>
+      <span>份额</span><strong>{{ "%.2f"|format(p.share) }}</strong>
+      <span>单位成本</span><strong>{{ "%.4f"|format(p.unit_cost) if p.unit_cost is not none else "-" }}</strong>
+      <span>最新净值</span><strong>{{ p.latest_nav or "-" }}</strong>
+      <span>成本</span><strong>{{ "%.2f"|format(p.cost) }}</strong>
+    </div>
+  </article>
+  {% else %}
+  <section class="panel muted">暂无持仓。</section>
+  {% endfor %}
+</section>
+
+<section class="table-wrap mobile-hidden" style="margin-top:12px">
   <table>
     <thead><tr><th>基金</th><th>份额</th><th>成本</th><th>单位成本</th><th>最新净值</th><th>市值</th><th>持仓收益</th><th>累计收益</th><th>收益率</th></tr></thead>
     <tbody>
