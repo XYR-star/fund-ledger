@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import bindparam, text
 from sqlmodel import Session, desc, select
@@ -8,6 +9,7 @@ from .models import FundNav, FundRule, FundTransaction, TransactionAction
 
 EPS_SHARE = 0.5
 EPS_COST = 1.0
+FUND_SHARE_DECIMALS = 2
 
 
 @dataclass
@@ -74,7 +76,7 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
         share = tx.share
         if tx.action == TransactionAction.buy:
             if share is None and tx.nav:
-                share = max((amount - fee) / tx.nav, 0)
+                share = max(round_fund_share((amount - fee) / tx.nav), 0)
             item["share"] += share or 0.0
             item["cost"] += amount + fee
             item["total_buy_amount"] += amount + fee
@@ -216,6 +218,11 @@ def action_sort_key(action: TransactionAction) -> int:
     if action == TransactionAction.sell:
         return 2
     return 3
+
+
+def round_fund_share(value: float) -> float:
+    quant = Decimal("1").scaleb(-FUND_SHARE_DECIMALS)
+    return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
 
 
 def xalpha_rows(session: Session, include_money: bool = False) -> list[dict]:

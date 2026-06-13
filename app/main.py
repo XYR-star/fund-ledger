@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from urllib.parse import quote
 
@@ -68,6 +69,7 @@ POSITION_EPS_COST = 1.0
 POSITION_EPS_MARKET_VALUE = 1.0
 NAV_SYNC_POLL_SECONDS = 60
 NAV_SYNC_INCREMENTAL_PZ = 60
+FUND_SHARE_DECIMALS = 2
 _nav_sync_task: asyncio.Task | None = None
 
 
@@ -1100,16 +1102,16 @@ def normalize_candidate_for_posting(
             issues.append(issue("missing_effective_nav", "缺有效净值", detail=nav_sync_error or "本地无覆盖交易日的净值"))
     if candidate.action == TransactionAction.buy and candidate.amount_cny is not None and candidate.nav and candidate.share is None:
         rule = ensure_rule(session, candidate.fund_code, candidate.fund_name, candidate.fund_type)
-        candidate.fee = candidate.fee if candidate.fee is not None else round(candidate.amount_cny * rule.buy_fee_rate, 2)
-        candidate.share = round((candidate.amount_cny - (candidate.fee or 0)) / candidate.nav, 4)
+        candidate.fee = candidate.fee if candidate.fee is not None else round_money(candidate.amount_cny * rule.buy_fee_rate)
+        candidate.share = round_fund_share((candidate.amount_cny - (candidate.fee or 0)) / candidate.nav)
     if candidate.action == TransactionAction.sell and candidate.share is not None and candidate.nav:
-        gross_amount = round(candidate.share * candidate.nav, 2)
+        gross_amount = round_money(candidate.share * candidate.nav)
         estimated_fee = estimate_sell_fee(session, candidate, gross_amount)
         should_recompute_fee = candidate.fee is None or (candidate.fee == 0 and estimated_fee > 0)
         if should_recompute_fee:
             candidate.fee = estimated_fee
         if candidate.amount_cny is None or abs(candidate.amount_cny - gross_amount) < 0.01:
-            candidate.amount_cny = round(gross_amount - (candidate.fee or 0), 2)
+            candidate.amount_cny = round_money(gross_amount - (candidate.fee or 0))
     candidate.status = CandidateStatus.auto_ready if not issues else CandidateStatus.needs_review
     set_candidate_issues(session, candidate, issues)
     candidate.updated_at = now_shanghai_naive()
@@ -1601,7 +1603,7 @@ def nth_nav_date(session: Session, fund_code: str, start: date, n: int) -> date:
 def estimate_sell_fee(session: Session, candidate: TransactionCandidate, gross_amount: float | None = None) -> float:
     if candidate.action != TransactionAction.sell or not candidate.share:
         return 0.0
-    gross = gross_amount if gross_amount is not None else (round(candidate.share * candidate.nav, 2) if candidate.nav else candidate.amount_cny)
+    gross = gross_amount if gross_amount is not None else (round_money(candidate.share * candidate.nav) if candidate.nav else candidate.amount_cny)
     if not gross:
         return 0.0
     tiers = session.exec(select(FundFeeTier).where(FundFeeTier.fund_code == candidate.fund_code).order_by(FundFeeTier.min_holding_days)).all()
@@ -1619,7 +1621,7 @@ def estimate_sell_fee(session: Session, candidate: TransactionCandidate, gross_a
         rate = redemption_rate_for_days(tiers, holding_days)
         fee += (gross * (used / candidate.share)) * rate
         remaining -= used
-    return round(fee, 2)
+    return round_money(fee)
 
 
 def fifo_lots_before(session: Session, candidate: TransactionCandidate) -> list[tuple[date, float]]:
@@ -1681,6 +1683,19 @@ def redemption_rate_for_days(tiers: list[FundFeeTier], days: int) -> float:
     return 0.0
 
 
+def round_half_up(value: float, decimals: int) -> float:
+    quant = Decimal("1").scaleb(-decimals)
+    return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
+
+
+def round_money(value: float) -> float:
+    return round_half_up(value, 2)
+
+
+def round_fund_share(value: float) -> float:
+    return round_half_up(value, FUND_SHARE_DECIMALS)
+
+
 def calculate_positions(session: Session, include_closed: bool = True) -> list[dict]:
     txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date, FundTransaction.id)).all()
     money_or_etf = {r.fund_code for r in session.exec(select(FundRule)).all() if r.fund_type in {FundType.etf, FundType.money_fund}}
@@ -1708,7 +1723,7 @@ def calculate_positions(session: Session, include_closed: bool = True) -> list[d
         amount = tx.amount_cny or 0.0
         fee = tx.fee or 0.0
         if tx.action == TransactionAction.buy:
-            item["share"] += tx.share or ((amount - fee) / tx.nav if tx.nav else 0)
+            item["share"] += tx.share or (round_fund_share((amount - fee) / tx.nav) if tx.nav else 0)
             item["cost"] += amount + fee
         elif tx.action == TransactionAction.sell:
             old_share = item["share"]

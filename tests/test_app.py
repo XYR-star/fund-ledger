@@ -93,6 +93,40 @@ def test_business_timezone_and_cutoff_are_shanghai_wall_time(app_ctx):
     assert main.effective_nav_target_date(date(2024, 1, 2), main.parse_time("15:00:00"), rule) == date(2024, 1, 3)
 
 
+def test_buy_share_uses_two_decimal_half_up_rounding(app_ctx):
+    main, db, _ = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionCandidate
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        for nav in session.exec(select(FundNav)).all():
+            session.delete(nav)
+        session.flush()
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=3.0))
+        session.commit()
+
+        parse_rows(session, main, [["2024-01-02", "14:30:00", "成功", "易方达蓝筹", "买入", "金额1000元"]])
+        candidate = session.exec(select(TransactionCandidate)).one()
+        assert candidate.share == 333.33
+
+        assert main.round_fund_share(1.005) == 1.01
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=main.TransactionAction.buy,
+                amount_cny=1000,
+                share=None,
+                nav=3.0,
+            )
+        )
+        session.commit()
+        position = main.calculate_positions(session, include_closed=False)[0]
+        assert position["share"] == 333.33
+
+
 def test_sqlite_is_configured_for_concurrent_ocr_writes(app_ctx):
     _, db, _ = app_ctx
     from sqlmodel import text
