@@ -1815,6 +1815,37 @@ def test_single_upload_endpoint_creates_document(app_ctx):
         assert doc.status.value == "uploaded"
 
 
+def test_pasted_manual_transaction_parses_code_and_amount_immediately(app_ctx):
+    main, db, client = app_ctx
+    from app.models import FundRule, FundType, ImportDocument, OcrRow, TransactionCandidate
+
+    with Session(db.engine) as session:
+        rule = session.get(FundRule, "021457") or FundRule(fund_code="021457")
+        rule.fund_name = "易方达中证A500ETF联接A"
+        rule.fund_type = FundType.open_fund
+        session.add(rule)
+        session.commit()
+
+    response = client.post(
+        "/upload",
+        data={"raw_text": "2026-4-22 21:18 买入 021457 50.44"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        doc = session.exec(select(ImportDocument)).one()
+        row = session.exec(select(OcrRow)).one()
+        candidate = session.exec(select(TransactionCandidate)).one()
+        assert doc.status.value == "parsed"
+        assert row.raw_text == "2026-4-22 21:18 买入 021457 50.44"
+        assert candidate.fund_code == "021457"
+        assert candidate.fund_name == "易方达中证A500ETF联接A"
+        assert candidate.trade_date == date(2026, 4, 22)
+        assert candidate.amount_cny == 50.44
+        assert candidate.row_status == main.RowStatus.success
+
+
 def test_candidates_page_renders_candidate_form(app_ctx):
     main, db, client = app_ctx
 

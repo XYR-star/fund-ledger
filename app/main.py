@@ -270,6 +270,9 @@ def upload_submit(
             status=ImportStatus.ocr_done,
         )
         session.add(doc)
+        session.flush()
+        save_ocr_rows(session, doc, [[line] for line in raw_text.splitlines() if line.strip()])
+        parse_document_candidates(session, doc.id)
         documents.append(doc)
     session.commit()
     if len(documents) == 1:
@@ -1528,17 +1531,28 @@ def parse_ocr_row(session: Session, row: OcrRow) -> TransactionCandidate:
     text = row.raw_text
     table_row = is_table_transaction_row(cells)
     row_status = classify_row_status(table_status_cell(cells) if table_row else text)
+    doc = session.get(ImportDocument, row.document_id)
+    if row_status == RowStatus.unknown and doc and not doc.source_file:
+        row_status = RowStatus.success
     action_text = table_action_cell(cells) if table_row else text
     action, event_type = classify_action(action_text)
     trade_date, submitted_at = extract_datetime(table_datetime_cell(cells) if table_row else text)
     amount = extract_amount(cells, text)
     share = extract_share(cells, text)
+    manual_value = extract_manual_numeric_value(text)
+    if action == TransactionAction.buy and amount is None:
+        amount = manual_value
+    if action == TransactionAction.sell and share is None:
+        share = manual_value
     fund_name = extract_fund_name(session, cells, text)
-    alias = match_alias(session, fund_name) if fund_name else None
-    fund_code = alias.fund_code if alias else ""
-    fund_type = alias.fund_type if alias else infer_fund_type(fund_name, fund_code)
+    fund_code = extract_fund_code(text)
+    rule = session.get(FundRule, fund_code) if fund_code else None
+    alias = match_alias(session, fund_name) if fund_name and not fund_code else None
+    fund_code = fund_code or (alias.fund_code if alias else "")
+    fund_name = fund_name or (rule.fund_name if rule else "")
+    fund_type = rule.fund_type if rule else (alias.fund_type if alias else infer_fund_type(fund_name, fund_code))
     if fund_code:
-        ensure_rule(session, fund_code, alias.fund_name if alias else fund_name, fund_type)
+        ensure_rule(session, fund_code, (rule.fund_name if rule else "") or (alias.fund_name if alias else fund_name), fund_type)
     candidate = TransactionCandidate(
         document_id=row.document_id,
         ocr_row_id=row.id,
@@ -1928,6 +1942,20 @@ def extract_share(cells: list[str], text: str) -> float | None:
                 return value
     match = re.search(r"(\d[\d,]*(?:\.\d+)?)\s*份", text)
     return parse_float(match.group(1)) if match else None
+
+
+def extract_fund_code(text: str) -> str:
+    match = re.search(r"(?<!\d)(\d{6})(?!\d)", text or "")
+    return match.group(1) if match else ""
+
+
+def extract_manual_numeric_value(text: str) -> float | None:
+    cleaned = re.sub(r"20\d{2}[-/.]?\d{1,2}[-/.]?\d{1,2}", " ", text or "")
+    cleaned = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", " ", cleaned)
+    cleaned = re.sub(r"(?<!\d)\d{6}(?!\d)", " ", cleaned)
+    values = [parse_float(item) for item in re.findall(r"(?<!\d)-?\d+(?:\.\d+)?(?!\d)", cleaned)]
+    values = [value for value in values if value is not None]
+    return values[-1] if values else None
 
 
 def extract_fund_name(session: Session, cells: list[str], text: str) -> str:
