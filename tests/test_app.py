@@ -1891,7 +1891,7 @@ def test_import_pages_show_document_level_manual_correction_badge(app_ctx):
 def test_core_pages_render(app_ctx):
     _, _, client = app_ctx
 
-    for path in ["/candidates", "/imports", "/upload", "/transactions", "/events", "/holdings", "/charts", "/eaccount", "/funds", "/settings"]:
+    for path in ["/candidates", "/imports", "/upload", "/transactions", "/events", "/holdings", "/charts", "/analysis", "/eaccount", "/funds", "/settings"]:
         response = client.get(path)
         assert response.status_code == 200, path
 
@@ -1941,6 +1941,77 @@ def test_iphone_mobile_card_views_render_for_key_pages(app_ctx):
     assert 'class="table-wrap mobile-hidden"' in transactions_page.text
     assert 'class="mobile-only mobile-list"' in eaccount_page.text
     assert "官方份额" in eaccount_page.text
+
+
+def test_analysis_page_summarizes_health_returns_and_cash_flow(app_ctx):
+    main, db, client = app_ctx
+    from app.models import (
+        EAccountHolding,
+        EAccountImport,
+        FundRule,
+        FundTransaction,
+        FundType,
+        ImportDocument,
+        ImportStatus,
+        TransactionAction,
+        TransactionCandidate,
+    )
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=FundType.open_fund,
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.sell,
+                amount_cny=20,
+                share=10,
+                nav=2,
+            )
+        )
+        session.add(FundRule(fund_code="999999", fund_name="未知类型基金", fund_type=FundType.unknown))
+        session.add(TransactionCandidate(status=main.CandidateStatus.needs_review, review_reason="缺基金代码"))
+        session.add(TransactionCandidate(status=main.CandidateStatus.posted, manual_corrected=True))
+        session.add(ImportDocument(file_name="bad.png", status=ImportStatus.error, error_message="OCR failed"))
+        imported = EAccountImport(file_name="snapshot.csv", row_count=1, mismatch_count=1)
+        session.add(imported)
+        session.flush()
+        session.add(
+            EAccountHolding(
+                import_id=imported.id,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                status="mismatch",
+                issue_summary="份额差异 1.00",
+            )
+        )
+        session.commit()
+
+    response = client.get("/analysis")
+
+    assert response.status_code == 200
+    assert "分析总览" in response.text
+    assert "账本健康" in response.text
+    assert "E 账户差异" in response.text
+    assert "收益拆解" in response.text
+    assert "贡献榜" in response.text
+    assert "资金流" in response.text
+    assert "待处理事项" in response.text
+    assert "易方达蓝筹精选混合" in response.text
 
 
 def test_funds_rules_table_keeps_table_cells_for_aligned_borders(app_ctx):

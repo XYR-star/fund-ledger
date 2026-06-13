@@ -237,6 +237,19 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
 .mobile-kv strong { text-align: right; font-weight: 650; overflow-wrap: anywhere; }
 .mobile-note { line-height: 1.5; }
 .mobile-raw { white-space: pre-wrap; overflow-wrap: anywhere; }
+.analysis-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.analysis-metric-danger { border-color: rgba(180, 35, 24, 0.45); }
+.analysis-metric-warn { border-color: rgba(181, 71, 8, 0.45); }
+.analysis-todo-list { display: grid; gap: 8px; }
+.analysis-todo {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 1fr) minmax(0, 2fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
 .ledger-group { padding: 0; overflow: hidden; }
 .ledger-summary {
   display: flex;
@@ -378,7 +391,7 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
   .container { padding: 12px; }
   .page-title { display: grid; align-items: start; }
   h1 { font-size: 20px; }
-  .grid, .form-grid, .chart-grid, .metrics { grid-template-columns: 1fr; }
+  .grid, .form-grid, .chart-grid, .metrics, .analysis-grid { grid-template-columns: 1fr; }
   .panel, .metrics .metric { padding: 12px; }
   .metric { gap: 5px; }
   .mobile-only { display: grid; }
@@ -395,4 +408,5 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
   .chart-head { display: grid; }
   .chart-metrics { justify-content: flex-start; }
   .chart-wrap { height: 220px; }
+  .analysis-todo { grid-template-columns: 1fr; align-items: start; }
 }

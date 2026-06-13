@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, desc, select
 from starlette.status import HTTP_303_SEE_OTHER
 
+from .analysis import build_analysis_report
 from .app_settings import configured, masked, runtime_settings, save_settings
 from .auth import add_session_middleware, current_user, login_user, logout_user, verify_login
 from .candidate_issues import issue, set_candidate_issues
@@ -177,6 +178,12 @@ def ocr_export_redirect(_: str = Depends(require_user)):
 @app.get("/nav")
 def nav_redirect(_: str = Depends(require_user)):
     return redirect("/funds")
+
+
+@app.get("/analysis", response_class=HTMLResponse)
+def analysis_page(request: Request, _: str = Depends(require_user), session: Session = Depends(get_session)):
+    report = build_analysis_report(session)
+    return templates.TemplateResponse("analysis.html", {"request": request, "report": report})
 
 
 @app.get("/eaccount", response_class=HTMLResponse)
