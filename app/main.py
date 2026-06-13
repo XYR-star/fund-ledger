@@ -949,11 +949,10 @@ def fetch_public_dividend_rows(years: list[int]) -> list[dict]:
 
 
 def dividend_method_action(value: str) -> TransactionAction | None:
-    if "红利再投" in value or "红利再投资" in value:
-        return TransactionAction.dividend_reinvest
+    value = value or ""
     if "现金分红" in value:
         return TransactionAction.dividend
-    return None
+    return TransactionAction.dividend_reinvest
 
 
 def existing_auto_dividend_transaction(session: Session, code: str, trade_date: date, action: TransactionAction) -> FundTransaction | None:
