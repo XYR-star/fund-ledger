@@ -1959,6 +1959,7 @@ def test_upload_page_keeps_manual_template_visible(app_ctx):
     assert response.status_code == 200
     assert 'action="/manual-import"' in response.text
     assert 'name="manual_text"' in response.text
+    assert 'class="sample manual-examples"' in response.text
     assert "买入：2026-04-22 21:18 买入 021457 50.44" in response.text
     assert "卖出：2026-04-22 21:18 卖出 021457 38.99" in response.text
     assert "placeholder=" not in response.text
