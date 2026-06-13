@@ -580,6 +580,7 @@ def candidate_post(
         session.commit()
         return redirect(f"/candidates?message=候选 #{candidate_id} 仍需修正: {candidate.review_reason}")
     session.commit()
+    refresh_eaccount_reconciliations(session)
     return redirect(f"/candidates?message=候选 #{candidate_id} 已入账")
 
 
@@ -1730,6 +1731,8 @@ def auto_post_candidates(session: Session, candidates: list[TransactionCandidate
             session.add(candidate)
             skipped += 1
     session.commit()
+    if posted:
+        refresh_eaccount_reconciliations(session)
     return posted, events, skipped
 
 

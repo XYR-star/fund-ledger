@@ -1131,6 +1131,76 @@ def test_refresh_eaccount_reconciliations_after_auto_dividend(app_ctx):
         assert imported.mismatch_count == 0
 
 
+def test_candidate_post_refreshes_eaccount_reconciliation(app_ctx):
+    main, db, client = app_ctx
+    from app.models import EAccountHolding, EAccountImport, FundNav, FundTransaction, TransactionAction, TransactionCandidate
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        imported = EAccountImport(file_name="snapshot.csv", row_count=1, mismatch_count=1)
+        session.add(imported)
+        session.flush()
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 10), unit_nav=1.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            EAccountHolding(
+                import_id=imported.id,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                official_share=150,
+                share_date=date(2024, 1, 10),
+                nav=1,
+                nav_date=date(2024, 1, 10),
+                settlement_value=150,
+                local_share=100,
+                local_market_value=100,
+                share_diff=50,
+                market_value_diff=50,
+                status="mismatch",
+                issue_summary="份额差异 50.00",
+            )
+        )
+        candidate = TransactionCandidate(
+            fund_code="005827",
+            fund_name="易方达蓝筹精选混合",
+            fund_type=main.FundType.open_fund,
+            action=TransactionAction.buy,
+            row_status=main.RowStatus.success,
+            trade_date=date(2024, 1, 10),
+            amount_cny=50,
+            share=50,
+            nav=1,
+            status=main.CandidateStatus.auto_ready,
+        )
+        session.add(candidate)
+        session.commit()
+        candidate_id = candidate.id
+        imported_id = imported.id
+
+    response = client.post(f"/candidates/{candidate_id}/post", follow_redirects=False)
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        holding = session.exec(select(EAccountHolding)).one()
+        imported = session.get(EAccountImport, imported_id)
+        assert holding.local_share == 150
+        assert holding.share_diff == 0
+        assert holding.status == "matched"
+        assert imported.matched_count == 1
+        assert imported.mismatch_count == 0
+
+
 def test_holdings_page_shows_dividend_sync_result(app_ctx):
     _, db, client = app_ctx
     from app.app_settings import save_settings
