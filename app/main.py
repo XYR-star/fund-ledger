@@ -498,9 +498,52 @@ def transactions_page(
     if fund_code:
         query = query.where(FundTransaction.fund_code == fund_code.zfill(6))
     txs = session.exec(query).all()
-    by_fund: dict[str, list[FundTransaction]] = {}
+    event_query = select(FundEvent)
+    if fund_code:
+        event_query = event_query.where(FundEvent.fund_code == fund_code.zfill(6))
+    events = session.exec(event_query).all()
+    by_fund: dict[str, list[dict]] = {}
     for tx in txs:
-        by_fund.setdefault(tx.fund_code, []).append(tx)
+        by_fund.setdefault(tx.fund_code, []).append(
+            {
+                "kind": "transaction",
+                "sort_date": tx.trade_date,
+                "sort_time": tx.submitted_at or time.min,
+                "sort_id": tx.id or 0,
+                "fund_name": tx.fund_name,
+                "fund_code": tx.fund_code,
+                "date": tx.trade_date,
+                "action": tx.action.value,
+                "amount_cny": tx.amount_cny,
+                "share": tx.share,
+                "nav": tx.nav,
+                "fee": tx.fee,
+                "confirm_date": tx.confirm_date,
+                "raw_text": tx.raw_text,
+            }
+        )
+    for event in events:
+        code = event.fund_code or "unknown"
+        by_fund.setdefault(code, []).append(
+            {
+                "kind": "event",
+                "sort_date": event.event_date or event.created_at.date(),
+                "sort_time": event.submitted_at or time.min,
+                "sort_id": event.id or 0,
+                "fund_name": event.fund_name,
+                "fund_code": event.fund_code,
+                "date": event.event_date or event.created_at.date(),
+                "action": event.event_type.value,
+                "amount_cny": event.amount_cny,
+                "share": None,
+                "nav": None,
+                "fee": None,
+                "confirm_date": None,
+                "raw_text": event.raw_text,
+            }
+        )
+    for rows in by_fund.values():
+        rows.sort(key=lambda item: (item["sort_date"], item["sort_time"], item["sort_id"]), reverse=True)
     return templates.TemplateResponse("transactions.html", {"request": request, "by_fund": by_fund, "fund_code_filter": fund_code})
 
 

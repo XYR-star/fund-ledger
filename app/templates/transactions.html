@@ -4,24 +4,31 @@
 <div class="page-title">
   <div><h1>交易流水</h1><p class="muted">买入、卖出、分红、红利再投。</p></div>
 </div>
-{% for code, txs in by_fund.items() %}
+{% for code, rows in by_fund.items() %}
 <details class="panel stack ledger-group" {% if fund_code_filter %}open{% endif %}>
   <summary class="ledger-summary">
-    <span class="ledger-title">{{ txs[0].fund_name or code }} {{ code }}</span>
+    <span class="ledger-title">{{ rows[0].fund_name or code }} {{ code }}</span>
     <span class="actions">
-      <span class="badge">{{ txs|length }} 笔</span>
+      <span class="badge">{{ rows|length }} 条</span>
       <a class="btn small" href="/funds/{{ code }}">详情</a>
     </span>
     <span class="ledger-toggle" aria-hidden="true"></span>
   </summary>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>交易日</th><th>动作</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th><th>确认日</th></tr></thead>
+      <thead><tr><th>日期</th><th>类型</th><th>动作/事件</th><th>金额</th><th>份额</th><th>净值</th><th>费用</th><th>确认日</th><th>原始行</th></tr></thead>
       <tbody>
-        {% for tx in txs %}
-        <tr>
-          <td>{{ tx.trade_date }}</td><td>{{ tx.action.value }}</td><td>{{ "%.2f"|format(tx.amount_cny) if tx.amount_cny is not none else "-" }}</td>
-          <td>{{ "%.4f"|format(tx.share) if tx.share is not none else "-" }}</td><td>{{ tx.nav or "-" }}</td><td>{{ tx.fee or "-" }}</td><td>{{ tx.confirm_date or "-" }}</td>
+        {% for row in rows %}
+        <tr class="{{ 'muted' if row.kind == 'event' else '' }}">
+          <td>{{ row.date }}</td>
+          <td><span class="badge">{{ "事件" if row.kind == "event" else "交易" }}</span></td>
+          <td>{{ row.action }}</td>
+          <td>{{ "%.2f"|format(row.amount_cny) if row.amount_cny is not none else "-" }}</td>
+          <td>{{ "%.4f"|format(row.share) if row.share is not none else "-" }}</td>
+          <td>{{ row.nav or "-" }}</td>
+          <td>{{ row.fee if row.fee is not none else "-" }}</td>
+          <td>{{ row.confirm_date or "-" }}</td>
+          <td class="sample">{{ row.raw_text }}</td>
         </tr>
         {% endfor %}
       </tbody>

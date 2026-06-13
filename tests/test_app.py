@@ -460,7 +460,41 @@ def test_transactions_page_groups_are_collapsible(app_ctx):
     assert response.status_code == 200
     assert '<details class="panel stack ledger-group"' in response.text
     assert "易方达蓝筹精选混合 005827" in response.text
-    assert "1 笔" in response.text
+    assert "1 条" in response.text
+
+
+def test_transactions_page_includes_dividend_method_events(app_ctx):
+    main, db, client = app_ctx
+    from app.models import FundEvent, EventType, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.dividend,
+                amount_cny=10,
+            )
+        )
+        session.add(
+            FundEvent(
+                event_type=EventType.dividend_method,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                event_date=date(2024, 1, 3),
+                raw_text="易方达蓝筹 修改分红方式 红利再投资 成功",
+            )
+        )
+        session.commit()
+
+    response = client.get("/transactions")
+    assert response.status_code == 200
+    assert "dividend_method" in response.text
+    assert "修改分红方式" in response.text
+    assert "事件" in response.text
 
 
 def test_candidate_normalization_auto_syncs_missing_nav(app_ctx, monkeypatch):
