@@ -24,6 +24,7 @@ def configure_sqlite(dbapi_connection, _):
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     migrate_eaccount_holding_schema()
+    cleanup_invalid_eaccount_holdings()
 
 
 def migrate_eaccount_holding_schema() -> None:
@@ -54,6 +55,52 @@ def migrate_eaccount_holding_schema() -> None:
                 f"INSERT INTO eaccountholding ({column_list}) SELECT {column_list} FROM {temp_name}"
             )
         connection.exec_driver_sql(f"DROP TABLE {temp_name}")
+
+
+def cleanup_invalid_eaccount_holdings() -> None:
+    with engine.begin() as connection:
+        holding_exists = connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='eaccountholding'"
+        ).fetchone()
+        import_exists = connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='eaccountimport'"
+        ).fetchone()
+        if not holding_exists or not import_exists:
+            return
+        connection.exec_driver_sql(
+            """
+            DELETE FROM eaccountholding
+            WHERE fund_code IN ('', '000000')
+              AND lower(coalesce(fund_name, '')) IN ('', 'nan', 'nat', 'none', 'null')
+              AND official_share IS NULL
+              AND official_market_value IS NULL
+              AND settlement_value IS NULL
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            UPDATE eaccountimport
+            SET row_count = (
+                    SELECT COUNT(*) FROM eaccountholding
+                    WHERE eaccountholding.import_id = eaccountimport.id
+                ),
+                matched_count = (
+                    SELECT COUNT(*) FROM eaccountholding
+                    WHERE eaccountholding.import_id = eaccountimport.id
+                      AND eaccountholding.status = 'matched'
+                ),
+                mismatch_count = (
+                    SELECT COUNT(*) FROM eaccountholding
+                    WHERE eaccountholding.import_id = eaccountimport.id
+                      AND eaccountholding.status = 'mismatch'
+                ),
+                missing_count = (
+                    SELECT COUNT(*) FROM eaccountholding
+                    WHERE eaccountholding.import_id = eaccountimport.id
+                      AND eaccountholding.status = 'missing'
+                )
+            """
+        )
 
 
 def get_session() -> Session:

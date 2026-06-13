@@ -66,7 +66,7 @@ SIP_STOP_WORDS = ("停止定投", "终止定投", "暂停定投")
 SIP_UPDATE_WORDS = ("修改定投", "变更定投")
 FORCED_ADJUST_WORDS = ("强制调增", "强制调减", "份额调增", "份额调减")
 TABLE_HEADER_WORDS = ("名称", "创建时间", "交易类型", "交易渠道", "份额", "金额", "状态")
-PLACEHOLDER_VALUES = {"", "-", "--", "—", "－", "无", "暂无"}
+PLACEHOLDER_VALUES = {"", "-", "--", "—", "－", "无", "暂无", "nan", "nat", "none", "null"}
 POSITION_EPS_SHARE = 0.5
 POSITION_EPS_COST = 1.0
 POSITION_EPS_MARKET_VALUE = 1.0
@@ -1705,7 +1705,15 @@ def is_table_transaction_row(cells: list[str]) -> bool:
 
 
 def normalized_cell(cell: str | None) -> str:
-    return str(cell or "").strip()
+    if cell is None:
+        return ""
+    try:
+        if cell != cell:
+            return ""
+    except TypeError:
+        pass
+    value = str(cell).strip()
+    return "" if value.lower() in PLACEHOLDER_VALUES else value
 
 
 def table_datetime_cell(cells: list[str]) -> str:

@@ -1117,6 +1117,72 @@ def test_eaccount_import_reconciles_against_snapshot_date_not_current_position(a
         assert holding.share_diff == 0
 
 
+def test_eaccount_import_skips_rows_without_fund_identity(app_ctx):
+    _, db, client = app_ctx
+    from app.models import EAccountHolding, EAccountImport
+
+    csv = "\n".join(
+        [
+            "序号,基金代码,基金名称,持有份额,份额日期,基金净值,净值日期,结算市值",
+            "1,,,,,,,",
+            "2,005827,易方达蓝筹精选混合,100.00,2024-01-02,1.00,2024-01-02,100.00",
+        ]
+    )
+    response = client.post(
+        "/eaccount/import",
+        files={"file": ("eaccount.csv", csv.encode("utf-8"), "text/csv")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with Session(db.engine) as session:
+        imported = session.exec(select(EAccountImport)).one()
+        holdings = session.exec(select(EAccountHolding)).all()
+        assert imported.row_count == 1
+        assert len(holdings) == 1
+        assert holdings[0].fund_code == "005827"
+
+
+def test_eaccount_cleanup_removes_existing_nan_placeholder_rows(app_ctx):
+    _, db, _ = app_ctx
+    from app.models import EAccountHolding, EAccountImport
+
+    with Session(db.engine) as session:
+        imported = EAccountImport(file_name="old.xlsx", row_count=2, missing_count=2)
+        session.add(imported)
+        session.flush()
+        session.add(
+            EAccountHolding(
+                import_id=imported.id,
+                fund_code="000000",
+                fund_name="nan",
+                status="missing",
+                issue_summary="系统缺少持仓",
+            )
+        )
+        session.add(
+            EAccountHolding(
+                import_id=imported.id,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                official_share=100,
+                status="missing",
+                issue_summary="系统缺少持仓",
+            )
+        )
+        session.commit()
+
+    db.cleanup_invalid_eaccount_holdings()
+
+    with Session(db.engine) as session:
+        imported = session.get(EAccountImport, 1)
+        holdings = session.exec(select(EAccountHolding).order_by(EAccountHolding.fund_code)).all()
+        assert len(holdings) == 1
+        assert holdings[0].fund_code == "005827"
+        assert imported.row_count == 1
+        assert imported.missing_count == 1
+
+
 def test_eaccount_versions_keep_each_import_and_can_be_reopened(app_ctx):
     main, db, client = app_ctx
     from app.models import EAccountImport, FundTransaction, TransactionAction
