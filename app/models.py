@@ -220,18 +220,14 @@ class EAccountHolding(SQLModel, table=True):
     import_id: int = Field(index=True)
     fund_code: str = Field(default="", index=True, max_length=6)
     fund_name: str = ""
-    share_category: str = ""
     manager: str = ""
     fund_account: str = ""
-    sales_agency: str = ""
-    trading_account: str = ""
     official_share: Optional[float] = None
     share_date: Optional[date] = None
     nav: Optional[float] = None
     nav_date: Optional[date] = None
     official_market_value: Optional[float] = None
     settlement_value: Optional[float] = None
-    dividend_method: str = ""
     local_share: Optional[float] = None
     local_market_value: Optional[float] = None
     share_diff: Optional[float] = None

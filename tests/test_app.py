@@ -994,8 +994,8 @@ def test_eaccount_import_reconciles_official_holdings(app_ctx):
 
     csv = "\n".join(
         [
-            "序号,基金代码,基金名称,份额类别,基金管理人,基金账户,销售机构,交易账户,持有份额,份额日期,基金净值,净值日期,资产情况(结算市值),结算市值,分红方式",
-            "1,005827,易方达蓝筹精选混合,A,易方达基金,FA001,易方达财富,中国银行,100.00,2024-01-02,2.50,2024-01-04,250.00,250.00,红利再投资",
+            "序号,基金代码,基金名称,基金管理人,基金账户,持有份额,份额日期,基金净值,净值日期,资产情况(结算市值),结算市值",
+            "1,005827,易方达蓝筹精选混合,易方达基金,FA001,100.00,2024-01-02,2.50,2024-01-04,250.00,250.00",
         ]
     )
     response = client.post(
@@ -1020,6 +1020,7 @@ def test_eaccount_import_reconciles_official_holdings(app_ctx):
     assert "基金 E 账户对账" in page.text
     assert "易方达蓝筹精选混合" in page.text
     assert "matched" in page.text
+    assert "分红方式" not in page.text
 
 
 def test_eaccount_import_marks_mismatched_holdings(app_ctx):
@@ -1044,8 +1045,8 @@ def test_eaccount_import_marks_mismatched_holdings(app_ctx):
 
     csv = "\n".join(
         [
-            "基金代码,基金名称,持有份额,份额日期,基金净值,净值日期,结算市值,分红方式",
-            "005827,易方达蓝筹精选混合,98.00,2024-01-02,1.00,2024-01-02,98.00,红利再投资",
+            "基金代码,基金名称,持有份额,份额日期,基金净值,净值日期,结算市值",
+            "005827,易方达蓝筹精选混合,98.00,2024-01-02,1.00,2024-01-02,98.00",
         ]
     )
     response = client.post(

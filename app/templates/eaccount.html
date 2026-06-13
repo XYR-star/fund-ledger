@@ -27,7 +27,7 @@
   <table>
     <thead>
       <tr>
-        <th>状态</th><th>基金</th><th>官方份额</th><th>系统份额</th><th>份额差</th><th>官方市值</th><th>系统市值</th><th>市值差</th><th>净值日期</th><th>分红方式</th><th>说明</th>
+        <th>状态</th><th>基金</th><th>官方份额</th><th>系统份额</th><th>份额差</th><th>官方市值</th><th>系统市值</th><th>市值差</th><th>净值日期</th><th>说明</th>
       </tr>
     </thead>
     <tbody>
@@ -42,11 +42,10 @@
         <td>{{ "%.2f"|format(h.local_market_value) if h.local_market_value is not none else "-" }}</td>
         <td>{{ "%.2f"|format(h.market_value_diff) if h.market_value_diff is not none else "-" }}</td>
         <td>{{ h.nav_date or h.share_date or "-" }}</td>
-        <td>{{ h.dividend_method or "-" }}</td>
         <td>{{ h.issue_summary }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="11" class="muted">暂无对账明细。</td></tr>
+      <tr><td colspan="10" class="muted">暂无对账明细。</td></tr>
       {% endfor %}
     </tbody>
   </table>
