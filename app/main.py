@@ -310,6 +310,17 @@ def imports_page(
     session: Session = Depends(get_session),
 ):
     docs = session.exec(select(ImportDocument).order_by(desc(ImportDocument.created_at))).all()
+    doc_ids = [doc.id for doc in docs if doc.id]
+    corrected_doc_ids = set(
+        session.exec(
+            select(TransactionCandidate.document_id).where(
+                TransactionCandidate.document_id.in_(doc_ids),
+                TransactionCandidate.manual_corrected == True,  # noqa: E712
+            )
+        ).all()
+        if doc_ids
+        else []
+    )
     return templates.TemplateResponse(
         "imports.html",
         {
@@ -320,6 +331,7 @@ def imports_page(
             "pending": sum(1 for d in docs if d.status == ImportStatus.uploaded),
             "ocr_done": sum(1 for d in docs if d.status in {ImportStatus.ocr_done, ImportStatus.parsed}),
             "ocr_doc_ids": [d.id for d in docs if d.status == ImportStatus.uploaded and d.source_file],
+            "corrected_doc_ids": corrected_doc_ids,
         },
     )
 
@@ -340,9 +352,18 @@ def import_detail_page(
         select(TransactionCandidate).where(TransactionCandidate.document_id == document_id).order_by(TransactionCandidate.id)
     ).all()
     stats = candidate_stats(candidates)
+    has_manual_corrections = any(candidate.manual_corrected for candidate in candidates)
     return templates.TemplateResponse(
         "import_detail.html",
-        {"request": request, "document": doc, "rows": rows, "candidates": candidates, "stats": stats, "message": message},
+        {
+            "request": request,
+            "document": doc,
+            "rows": rows,
+            "candidates": candidates,
+            "stats": stats,
+            "message": message,
+            "has_manual_corrections": has_manual_corrections,
+        },
     )
 
 

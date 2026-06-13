@@ -4,7 +4,10 @@
 <div class="page-title">
   <div>
     <h1>导入 #{{ document.id }}</h1>
-    <p class="muted">{{ document.file_name or "粘贴文本" }} · {{ document.status.value }}</p>
+    <p class="muted">
+      {{ document.file_name or "粘贴文本" }} · {{ document.status.value }}
+      {% if has_manual_corrections %}<span class="badge warn">含修正</span>{% endif %}
+    </p>
   </div>
   <div class="actions">
     {% if document.source_file %}<form method="post" action="/imports/{{ document.id }}/ocr"><button class="btn primary" type="submit">运行 OCR</button></form>{% endif %}

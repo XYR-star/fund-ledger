@@ -1853,6 +1853,41 @@ def test_import_delete_removes_document_rows_and_candidates(app_ctx, tmp_path):
         assert session.exec(select(TransactionCandidate)).all() == []
 
 
+def test_import_pages_show_document_level_manual_correction_badge(app_ctx):
+    main, db, client = app_ctx
+    from app.models import ImportDocument, ImportStatus, TransactionCandidate, TransactionAction
+
+    with Session(db.engine) as session:
+        doc = ImportDocument(file_name="手动录入", status=ImportStatus.parsed)
+        session.add(doc)
+        session.flush()
+        session.add(
+            TransactionCandidate(
+                document_id=doc.id,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                action=TransactionAction.buy,
+                row_status=main.RowStatus.success,
+                trade_date=date(2024, 1, 2),
+                amount_cny=999.99,
+                nav=1,
+                manual_corrected=True,
+                status=main.CandidateStatus.posted,
+            )
+        )
+        session.commit()
+        doc_id = doc.id
+
+    imports_page = client.get("/imports")
+    assert imports_page.status_code == 200
+    assert "含修正" in imports_page.text
+
+    detail_page = client.get(f"/imports/{doc_id}")
+    assert detail_page.status_code == 200
+    assert "含修正" in detail_page.text
+
+
 def test_core_pages_render(app_ctx):
     _, _, client = app_ctx
 
