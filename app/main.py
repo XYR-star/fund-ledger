@@ -1611,7 +1611,17 @@ def build_fund_chart(txs: list[FundTransaction], navs: list[FundNav]) -> dict:
             continue
         nav = next((n for n in navs if n.nav_date >= tx.trade_date), None)
         if nav:
-            markers.append({"date": str(nav.nav_date), "action": tx.action.value, "value": nav.unit_nav / base - 1})
+            amount = tx.amount_cny
+            if amount is None and tx.share and tx.nav:
+                amount = tx.share * tx.nav
+            markers.append(
+                {
+                    "date": str(nav.nav_date),
+                    "action": tx.action.value,
+                    "value": nav.unit_nav / base - 1,
+                    "amount": amount,
+                }
+            )
     return {"points": points, "markers": markers}
 
 

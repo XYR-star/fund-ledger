@@ -548,8 +548,46 @@ def test_charts_page_shows_only_active_open_funds(app_ctx):
     assert response.status_code == 200
     assert "易方达蓝筹精选混合 005827" in response.text
     assert "已清仓基金" not in response.text
+    assert 'data-range="1y"' in response.text
+    assert "/static/fund_charts.js" in response.text
     nav = client.get("/holdings")
     assert 'href="/charts">曲线</a>' in nav.text
+
+
+def test_fund_chart_markers_include_amount_for_scaled_points(app_ctx):
+    main, _, _ = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    chart = main.build_fund_chart(
+        [
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=1000,
+                share=1000,
+                nav=1,
+            ),
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.sell,
+                amount_cny=None,
+                share=100,
+                nav=2,
+            ),
+        ],
+        [
+            FundNav(fund_code="005827", nav_date=date(2024, 1, 2), unit_nav=1),
+            FundNav(fund_code="005827", nav_date=date(2024, 1, 3), unit_nav=2),
+        ],
+    )
+
+    assert [marker["amount"] for marker in chart["markers"]] == [1000, 200]
 
 
 def test_tiny_residual_after_sell_is_treated_as_closed(app_ctx):

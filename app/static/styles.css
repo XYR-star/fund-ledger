@@ -236,14 +236,35 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
 .chart-card { display: grid; gap: 12px; }
 .chart-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.chart-head h2 { margin: 0; }
 .chart-metrics { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.chart-range {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.chart-range button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--muted);
+  font-size: 12px;
+}
+.chart-range button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--chart-fund-fill);
+}
 .chart-wrap {
   position: relative;
   height: 260px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--input-bg);
-  padding: 12px 44px 12px 8px;
+  padding: 12px 44px 26px 8px;
 }
 .performance-chart { width: 100%; height: 100%; overflow: visible; }
 .chart-grid-line { vector-effect: non-scaling-stroke; stroke: var(--line); stroke-width: 0.3; stroke-dasharray: 3 5; }
@@ -258,7 +279,6 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
   fill: var(--chart-marker);
   stroke: var(--panel);
   stroke-width: 1.5;
-  r: 2.2;
 }
 .sell-marker { fill: var(--chart-sell); }
 .chart-axis {
@@ -271,6 +291,22 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
   font-size: 11px;
 }
 .chart-axis span { position: absolute; right: 0; transform: translateY(-50%); }
+.chart-xaxis {
+  position: absolute;
+  left: 8px;
+  right: 44px;
+  bottom: 5px;
+  height: 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.chart-xaxis span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.chart-xaxis span:first-child { transform: translateX(0); }
+.chart-xaxis span:last-child { transform: translateX(-100%); }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 4px; }
 .legend-line {
   display: inline-block;

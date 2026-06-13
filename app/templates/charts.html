@@ -20,9 +20,17 @@
         <span class="badge">{{ "%.2f%%"|format(item.position.profit_rate * 100) if item.position.profit_rate is not none else "-" }}</span>
       </div>
     </div>
+    <div class="chart-range" data-chart-range>
+      <button type="button" data-range="6m">近半年</button>
+      <button type="button" data-range="1y">近一年</button>
+      <button type="button" data-range="3y">近三年</button>
+      <button type="button" data-range="all">全部</button>
+    </div>
     <div class="chart-wrap">
       <div class="chart-data hidden" data-chart='{{ item.chart|tojson }}'></div>
-      <svg class="performance-chart fund-overview-chart" viewBox="0 0 100 42" preserveAspectRatio="none"></svg>
+      <svg class="performance-chart fund-overview-chart" viewBox="0 0 100 52" preserveAspectRatio="none"></svg>
+      <div class="chart-axis"></div>
+      <div class="chart-xaxis"></div>
     </div>
   </article>
   {% endfor %}
@@ -31,26 +39,5 @@
 <section class="panel muted">暂无未清仓场外基金曲线。</section>
 {% endif %}
 
-<script>
-  (() => {
-    document.querySelectorAll(".chart-card").forEach((card) => {
-      const data = JSON.parse(card.querySelector(".chart-data").dataset.chart);
-      const svg = card.querySelector(".fund-overview-chart");
-      if (!data.points.length) {
-        svg.innerHTML = "<text x='2' y='22' fill='currentColor'>暂无净值</text>";
-        return;
-      }
-      const values = data.points.map(p => p.value).concat(data.markers.map(m => m.value));
-      const min = Math.min(...values), max = Math.max(...values);
-      const span = max - min || 1;
-      const x = i => data.points.length === 1 ? 0 : i * 100 / (data.points.length - 1);
-      const y = v => 38 - ((v - min) / span) * 34;
-      const d = data.points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(2)},${y(p.value).toFixed(2)}`).join(" ");
-      svg.innerHTML = `<path d="${d}" class="chart-line fund-line"></path>` + data.markers.map(m => {
-        const i = data.points.findIndex(p => p.date >= m.date);
-        return `<circle cx="${x(Math.max(i, 0)).toFixed(2)}" cy="${y(m.value).toFixed(2)}" r="1.5" class="${m.action === "sell" ? "sell-marker" : "buy-marker"}"></circle>`;
-      }).join("");
-    });
-  })();
-</script>
+<script src="/static/fund_charts.js?v=20260613-range-axis"></script>
 {% endblock %}
