@@ -1062,6 +1062,95 @@ def test_dividend_sync_route_starts_background_job_without_inline_sync(app_ctx, 
         assert config["DIVIDEND_SYNC_LAST_RESULT"] == "同步中"
 
 
+def test_refresh_eaccount_reconciliations_after_auto_dividend(app_ctx):
+    main, db, _ = app_ctx
+    from app.models import EAccountHolding, EAccountImport, FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        imported = EAccountImport(file_name="snapshot.csv", row_count=1, mismatch_count=1)
+        session.add(imported)
+        session.flush()
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 10), unit_nav=2.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            EAccountHolding(
+                import_id=imported.id,
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                official_share=105,
+                share_date=date(2024, 1, 10),
+                nav=2,
+                nav_date=date(2024, 1, 10),
+                settlement_value=210,
+                local_share=100,
+                local_market_value=200,
+                share_diff=5,
+                market_value_diff=10,
+                status="mismatch",
+                issue_summary="份额差异 5.00",
+            )
+        )
+        session.commit()
+
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 10),
+                action=TransactionAction.dividend_reinvest,
+                share=5,
+                nav=2,
+                source_file="auto_dividend_sync",
+            )
+        )
+        session.commit()
+
+        refreshed = main.refresh_eaccount_reconciliations(session)
+        assert refreshed == 1
+
+        holding = session.exec(select(EAccountHolding)).one()
+        imported = session.get(EAccountImport, imported.id)
+        assert holding.local_share == 105
+        assert holding.local_market_value == 210
+        assert holding.share_diff == 0
+        assert holding.status == "matched"
+        assert imported.matched_count == 1
+        assert imported.mismatch_count == 0
+
+
+def test_holdings_page_shows_dividend_sync_result(app_ctx):
+    _, db, client = app_ctx
+    from app.app_settings import save_settings
+
+    with Session(db.engine) as session:
+        save_settings(
+            session,
+            {
+                "DIVIDEND_SYNC_LAST_RUN_AT": "2026-06-13 20:45:25",
+                "DIVIDEND_SYNC_LAST_FINISHED_AT": "2026-06-13 20:47:31",
+                "DIVIDEND_SYNC_LAST_RESULT": "分红同步完成: 入账 1 条，跳过 10429 条",
+            },
+        )
+
+    response = client.get("/holdings")
+    assert response.status_code == 200
+    assert "上次分红同步" in response.text
+    assert "入账 1 条" in response.text
+
+
 def test_later_ocr_dividend_matching_auto_sync_is_ignored(app_ctx):
     main, db, _ = app_ctx
     from app.models import CandidateStatus, FundTransaction, TransactionAction, TransactionCandidate

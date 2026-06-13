@@ -8,6 +8,18 @@
 {% if message %}
 <section class="panel" style="margin-bottom:12px">{{ message }}</section>
 {% endif %}
+{% if config.DIVIDEND_SYNC_RUNNING == "true" or config.DIVIDEND_SYNC_LAST_RESULT %}
+<section class="panel" style="margin-bottom:12px">
+  <strong>上次分红同步</strong>
+  {% if config.DIVIDEND_SYNC_LAST_RUN_AT %}{{ config.DIVIDEND_SYNC_LAST_RUN_AT }}{% endif %}
+  {% if config.DIVIDEND_SYNC_RUNNING == "true" %}
+    · 同步中
+  {% elif config.DIVIDEND_SYNC_LAST_RESULT %}
+    · {{ config.DIVIDEND_SYNC_LAST_RESULT }}
+    {% if config.DIVIDEND_SYNC_LAST_FINISHED_AT %} · 完成 {{ config.DIVIDEND_SYNC_LAST_FINISHED_AT }}{% endif %}
+  {% endif %}
+</section>
+{% endif %}
 <section class="metrics">
   <div class="metric"><span>市值</span><strong>{{ "%.2f"|format(totals.market_value) }}</strong></div>
   <div class="metric"><span>成本</span><strong>{{ "%.2f"|format(totals.cost) }}</strong></div>

@@ -657,6 +657,7 @@ def holdings_page(request: Request, message: str = "", _: str = Depends(require_
     active = [p for p in positions if not p["is_closed"]]
     closed = [p for p in positions if p["is_closed"]]
     platform_cards = build_platform_cards(session, active)
+    config = runtime_settings(session)
     totals = {
         "market_value": sum(p["market_value"] for p in active),
         "cost": sum(p["cost"] for p in active),
@@ -666,7 +667,7 @@ def holdings_page(request: Request, message: str = "", _: str = Depends(require_
     }
     return templates.TemplateResponse(
         "holdings.html",
-        {"request": request, "holdings": active, "closed": closed, "totals": totals, "platform_cards": platform_cards, "message": message},
+        {"request": request, "holdings": active, "closed": closed, "totals": totals, "platform_cards": platform_cards, "message": message, "config": config},
     )
 
 
@@ -944,10 +945,11 @@ def run_dividend_sync_background() -> None:
     with Session(engine) as session:
         try:
             result = sync_active_fund_dividends(session)
+            refreshed = refresh_eaccount_reconciliations(session)
             if result["errors"]:
-                summary = f"分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条，错误 {len(result['errors'])} 个"
+                summary = f"分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条，错误 {len(result['errors'])} 个，对账刷新 {refreshed} 行"
             else:
-                summary = f"分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条"
+                summary = f"分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条，对账刷新 {refreshed} 行"
         except Exception as exc:
             summary = f"分红同步失败: {exc}"
         save_settings(
@@ -958,6 +960,58 @@ def run_dividend_sync_background() -> None:
                 "DIVIDEND_SYNC_LAST_FINISHED_AT": datetime.now(BUSINESS_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
+
+
+def refresh_eaccount_reconciliations(session: Session) -> int:
+    imports = session.exec(select(EAccountImport)).all()
+    refreshed = 0
+    for imported in imports:
+        holdings = session.exec(select(EAccountHolding).where(EAccountHolding.import_id == imported.id)).all()
+        positions_by_date: dict[date | None, dict[str, dict]] = {}
+        matched = mismatch = missing = 0
+        for holding in holdings:
+            snapshot_date = holding.share_date or holding.nav_date
+            if snapshot_date not in positions_by_date:
+                positions_by_date[snapshot_date] = {
+                    p["fund_code"]: p
+                    for p in calculate_positions(session, include_closed=False, as_of=snapshot_date)
+                }
+            refreshed_holding = build_eaccount_holding(
+                holding.import_id,
+                {
+                    "fund_code": holding.fund_code,
+                    "fund_name": holding.fund_name,
+                    "fund_account": holding.fund_account,
+                    "official_share": holding.official_share,
+                    "share_date": holding.share_date,
+                    "nav": holding.nav,
+                    "nav_date": holding.nav_date,
+                    "official_market_value": holding.official_market_value,
+                    "settlement_value": holding.settlement_value,
+                },
+                positions_by_date[snapshot_date],
+            )
+            holding.local_share = refreshed_holding.local_share
+            holding.local_market_value = refreshed_holding.local_market_value
+            holding.share_diff = refreshed_holding.share_diff
+            holding.market_value_diff = refreshed_holding.market_value_diff
+            holding.status = refreshed_holding.status
+            holding.issue_summary = refreshed_holding.issue_summary
+            session.add(holding)
+            refreshed += 1
+            if holding.status == "matched":
+                matched += 1
+            elif holding.status == "missing":
+                missing += 1
+            else:
+                mismatch += 1
+        imported.row_count = len(holdings)
+        imported.matched_count = matched
+        imported.mismatch_count = mismatch
+        imported.missing_count = missing
+        session.add(imported)
+    session.commit()
+    return refreshed
 
 
 def sync_active_fund_dividends(session: Session, years: list[int] | None = None) -> dict:
