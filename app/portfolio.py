@@ -60,6 +60,7 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
                 "fund_name": tx.fund_name,
                 "share": 0.0,
                 "cost": 0.0,
+                "lots": [],
                 "realized_profit": 0.0,
                 "total_buy_amount": 0.0,
                 "total_sell_amount": 0.0,
@@ -79,15 +80,16 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
                 share = max(round_fund_share((amount - fee) / tx.nav), 0)
             item["share"] += share or 0.0
             item["cost"] += amount + fee
+            if share:
+                item["lots"].append({"share": share, "cost": amount + fee})
             item["total_buy_amount"] += amount + fee
         elif tx.action == TransactionAction.sell:
             sell_share = share or 0.0
             old_share = item["share"]
-            cost_reduction = 0.0
-            if old_share > EPS_SHARE and sell_share > 0:
-                ratio = min(sell_share / old_share, 1.0)
-                cost_reduction = item["cost"] * ratio
-                item["cost"] -= cost_reduction
+            cost_reduction = consume_fifo_cost(item["lots"], sell_share)
+            if not cost_reduction and old_share > EPS_SHARE and sell_share > 0:
+                cost_reduction = item["cost"] * min(sell_share / old_share, 1.0)
+            item["cost"] -= cost_reduction
             proceeds = amount or ((sell_share * tx.nav) if tx.nav else 0.0)
             net_proceeds = max(proceeds - fee, 0.0)
             item["total_sell_amount"] += net_proceeds
@@ -96,11 +98,14 @@ def calculate_position_summaries(session: Session, include_money: bool = False) 
             if item["share"] < EPS_SHARE:
                 item["cost"] = 0.0
                 item["share"] = 0.0
+                item["lots"] = []
         elif tx.action == TransactionAction.dividend:
             item["cost"] = max(item["cost"] - (amount or 0.0), 0.0)
+            reduce_fifo_cost(item["lots"], amount or 0.0)
         elif tx.action == TransactionAction.dividend_reinvest:
             item["share"] += share or 0.0
-            item["realized_profit"] += amount or 0.0
+            if share:
+                item["lots"].append({"share": share, "cost": 0.0})
 
     positions: list[PositionSummary] = []
     latest_navs = latest_nav_by_fund(session, set(grouped))
@@ -223,6 +228,38 @@ def action_sort_key(action: TransactionAction) -> int:
 def round_fund_share(value: float) -> float:
     quant = Decimal("1").scaleb(-FUND_SHARE_DECIMALS)
     return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
+
+
+def consume_fifo_cost(lots: list[dict], share: float) -> float:
+    remaining = share
+    cost_reduction = 0.0
+    while remaining > 0 and lots:
+        lot = lots[0]
+        lot_share = lot.get("share", 0.0) or 0.0
+        lot_cost = lot.get("cost", 0.0) or 0.0
+        if lot_share <= 0:
+            lots.pop(0)
+            continue
+        used = min(remaining, lot_share)
+        reduction = lot_cost * (used / lot_share)
+        cost_reduction += reduction
+        lot["share"] = lot_share - used
+        lot["cost"] = max(lot_cost - reduction, 0.0)
+        remaining -= used
+        if lot["share"] <= 1e-9:
+            lots.pop(0)
+    return cost_reduction
+
+
+def reduce_fifo_cost(lots: list[dict], amount: float) -> None:
+    if amount <= 0:
+        return
+    total_cost = sum((lot.get("cost", 0.0) or 0.0) for lot in lots)
+    if total_cost <= 0:
+        return
+    for lot in lots:
+        lot_cost = lot.get("cost", 0.0) or 0.0
+        lot["cost"] = max(lot_cost - amount * (lot_cost / total_cost), 0.0)
 
 
 def xalpha_rows(session: Session, include_money: bool = False) -> list[dict]:

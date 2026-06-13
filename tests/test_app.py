@@ -716,6 +716,68 @@ def test_holdings_show_unit_cost(app_ctx):
     assert "1.2300" in response.text
 
 
+def test_position_cost_uses_fifo_and_cash_dividend_reduces_cost(app_ctx):
+    main, db, _ = app_ctx
+    from app.models import FundNav, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 5), unit_nav=1.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 1),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=120,
+                share=100,
+                nav=1.2,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 3),
+                action=TransactionAction.sell,
+                amount_cny=110,
+                share=100,
+                nav=1.1,
+            )
+        )
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 4),
+                action=TransactionAction.dividend,
+                amount_cny=10,
+                nav=1,
+            )
+        )
+        session.commit()
+
+        position = main.calculate_positions(session, include_closed=False)[0]
+        assert position["share"] == 100
+        assert position["cost"] == 110
+        assert position["realized_profit"] == 10
+        assert position["unit_cost"] == 1.1
+
+
 def test_sell_without_prior_buy_is_marked_incomplete(app_ctx):
     main, db, _ = app_ctx
     from app.models import FundNav, FundTransaction, TransactionAction
