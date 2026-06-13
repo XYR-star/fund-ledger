@@ -582,10 +582,11 @@ def events_page(request: Request, _: str = Depends(require_user), session: Sessi
 
 
 @app.get("/holdings", response_class=HTMLResponse)
-def holdings_page(request: Request, _: str = Depends(require_user), session: Session = Depends(get_session)):
+def holdings_page(request: Request, message: str = "", _: str = Depends(require_user), session: Session = Depends(get_session)):
     positions = calculate_positions(session)
     active = [p for p in positions if not p["is_closed"]]
     closed = [p for p in positions if p["is_closed"]]
+    platform_cards = build_platform_cards(session, active)
     totals = {
         "market_value": sum(p["market_value"] for p in active),
         "cost": sum(p["cost"] for p in active),
@@ -595,7 +596,7 @@ def holdings_page(request: Request, _: str = Depends(require_user), session: Ses
     }
     return templates.TemplateResponse(
         "holdings.html",
-        {"request": request, "holdings": active, "closed": closed, "totals": totals},
+        {"request": request, "holdings": active, "closed": closed, "totals": totals, "platform_cards": platform_cards, "message": message},
     )
 
 
@@ -666,6 +667,8 @@ def fund_rule_save(
     sell_confirm_days: int = Form(1),
     cutoff_time: str = Form("15:00"),
     buy_fee_rate: float = Form(0.0),
+    platform: str = Form(""),
+    dividend_method: str = Form(""),
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
@@ -674,10 +677,29 @@ def fund_rule_save(
     rule.sell_confirm_days = sell_confirm_days
     rule.cutoff_time = cutoff_time
     rule.buy_fee_rate = buy_fee_rate
+    rule.platform = platform.strip()
+    rule.dividend_method = dividend_method.strip()
     rule.updated_at = now_shanghai_naive()
     session.add(rule)
     session.commit()
     return redirect("/funds?message=规则已保存")
+
+
+@app.post("/fund-rules/{fund_code}/classify")
+def fund_rule_classify(
+    fund_code: str,
+    platform: str = Form(""),
+    dividend_method: str = Form(""),
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    rule = ensure_rule(session, fund_code)
+    rule.platform = platform.strip()
+    rule.dividend_method = dividend_method.strip()
+    rule.updated_at = now_shanghai_naive()
+    session.add(rule)
+    session.commit()
+    return redirect("/funds?message=分类已保存")
 
 
 @app.post("/fund-rules/{fund_code}/sync")
@@ -693,6 +715,14 @@ def fund_nav_sync(fund_code: str, _: str = Depends(require_user), session: Sessi
     if error:
         return redirect(f"/funds?message=净值同步失败: {error}")
     return redirect(f"/funds?message=净值已同步 {inserted} 条")
+
+
+@app.post("/dividends/sync")
+def dividend_sync(_: str = Depends(require_user)):
+    result = sync_active_fund_dividends_once()
+    if result["errors"]:
+        return redirect(f"/holdings?message=分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条，错误 {len(result['errors'])} 个")
+    return redirect(f"/holdings?message=分红同步完成: 入账 {result['posted']} 条，跳过 {result['skipped']} 条")
 
 
 @app.post("/settings/nav-sync-now")
@@ -809,8 +839,9 @@ def sync_active_fund_navs_once() -> dict[str, int]:
             else:
                 succeeded += 1
                 inserted += count
+        dividend_result = sync_active_fund_dividends(session)
         now = datetime.now(BUSINESS_TIMEZONE)
-        summary = f"成功 {succeeded} 个，失败 {failed} 个，新增 {inserted} 条，增量 {incremental} 个，历史 {full} 个"
+        summary = f"成功 {succeeded} 个，失败 {failed} 个，新增 {inserted} 条，增量 {incremental} 个，历史 {full} 个，分红入账 {dividend_result['posted']} 条"
         if errors:
             summary = f"{summary}；" + "；".join(errors[:5])
         save_settings(
@@ -822,6 +853,147 @@ def sync_active_fund_navs_once() -> dict[str, int]:
             },
         )
         return {"total": len(codes), "succeeded": succeeded, "failed": failed, "inserted": inserted}
+
+
+def sync_active_fund_dividends_once() -> dict:
+    with Session(engine) as session:
+        return sync_active_fund_dividends(session)
+
+
+def sync_active_fund_dividends(session: Session, years: list[int] | None = None) -> dict:
+    now = datetime.now(BUSINESS_TIMEZONE)
+    target_years = years or [now.year - 1, now.year]
+    active_codes = set(active_open_fund_codes_for_nav_sync(session))
+    rules = {rule.fund_code: rule for rule in session.exec(select(FundRule)).all()}
+    posted = 0
+    skipped = 0
+    errors: list[str] = []
+    try:
+        rows = fetch_public_dividend_rows(target_years)
+    except Exception as exc:
+        return {"posted": 0, "skipped": 0, "errors": [str(exc)]}
+    for row in rows:
+        code = str(row.get("fund_code") or "").zfill(6)
+        if code not in active_codes:
+            skipped += 1
+            continue
+        register_date = row.get("register_date")
+        per_share = row.get("dividend_per_share")
+        if not register_date or per_share is None:
+            skipped += 1
+            continue
+        rule = rules.get(code)
+        method = dividend_method_action(rule.dividend_method if rule else "")
+        if method is None:
+            skipped += 1
+            continue
+        if existing_auto_dividend_transaction(session, code, register_date, method):
+            skipped += 1
+            continue
+        held_share = fund_share_on_date(session, code, register_date)
+        if held_share <= 0:
+            skipped += 1
+            continue
+        amount = round_money(held_share * per_share)
+        if amount <= 0:
+            skipped += 1
+            continue
+        fund_name = (rule.fund_name if rule else "") or str(row.get("fund_name") or "")
+        nav = effective_nav(session, code, register_date, None, rule or FundRule(fund_code=code, fund_type=FundType.open_fund))
+        share = None
+        amount_cny = amount
+        if method == TransactionAction.dividend_reinvest:
+            if not nav:
+                skipped += 1
+                continue
+            share = round_fund_share(amount / nav.unit_nav)
+            amount_cny = None
+        tx = FundTransaction(
+            fund_code=code,
+            fund_name=fund_name,
+            fund_type=FundType.open_fund,
+            trade_date=register_date,
+            effective_nav_date=nav.nav_date if nav else register_date,
+            confirm_date=nav.nav_date if nav else register_date,
+            action=method,
+            amount_cny=amount_cny,
+            share=share,
+            nav=nav.unit_nav if nav else None,
+            source_file="auto_dividend_sync",
+            raw_text=f"系统分红同步 {code} {fund_name} {register_date} 每份分红 {per_share}",
+        )
+        session.add(tx)
+        posted += 1
+    session.commit()
+    return {"posted": posted, "skipped": skipped, "errors": errors}
+
+
+def fetch_public_dividend_rows(years: list[int]) -> list[dict]:
+    import akshare as ak
+
+    rows: list[dict] = []
+    for year in years:
+        df = ak.fund_fh_em(year=str(year))
+        for item in df.to_dict(orient="records"):
+            rows.append(
+                {
+                    "fund_code": str(item.get("基金代码") or "").zfill(6),
+                    "fund_name": item.get("基金简称") or "",
+                    "register_date": coerce_date(item.get("权益登记日")),
+                    "ex_date": coerce_date(item.get("除息日期")),
+                    "pay_date": coerce_date(item.get("分红发放日")),
+                    "dividend_per_share": parse_float(str(item.get("分红"))),
+                }
+            )
+    return rows
+
+
+def dividend_method_action(value: str) -> TransactionAction | None:
+    if "红利再投" in value or "红利再投资" in value:
+        return TransactionAction.dividend_reinvest
+    if "现金分红" in value:
+        return TransactionAction.dividend
+    return None
+
+
+def existing_auto_dividend_transaction(session: Session, code: str, trade_date: date, action: TransactionAction) -> FundTransaction | None:
+    return session.exec(
+        select(FundTransaction).where(
+            FundTransaction.fund_code == code,
+            FundTransaction.trade_date == trade_date,
+            FundTransaction.action == action,
+            FundTransaction.source_file == "auto_dividend_sync",
+        )
+    ).first()
+
+
+def fund_share_on_date(session: Session, code: str, target_date: date) -> float:
+    share = 0.0
+    txs = session.exec(
+        select(FundTransaction)
+        .where(FundTransaction.fund_code == code, FundTransaction.trade_date <= target_date)
+        .order_by(FundTransaction.trade_date, FundTransaction.id)
+    ).all()
+    for tx in txs:
+        if tx.action in {TransactionAction.buy, TransactionAction.dividend_reinvest}:
+            share += tx.share or 0.0
+        elif tx.action == TransactionAction.sell:
+            share = max(share - (tx.share or 0.0), 0.0)
+    return share
+
+
+def coerce_date(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    if hasattr(value, "date"):
+        return value.date()
+    text = str(value)[:10]
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def record_nav_sync_failure(message: str) -> None:
@@ -848,6 +1020,35 @@ def active_open_fund_codes_for_nav_sync(session: Session) -> list[str]:
         if rule_types.get(code, FundType.open_fund) == FundType.open_fund:
             codes.append(code)
     return sorted(set(codes))
+
+
+def build_platform_cards(session: Session, positions: list[dict]) -> list[dict]:
+    platform_by_code = {
+        rule.fund_code: (rule.platform.strip() or "未分类")
+        for rule in session.exec(select(FundRule)).all()
+    }
+    cards: dict[str, dict] = {}
+    for position in positions:
+        name = platform_by_code.get(position["fund_code"], "未分类")
+        card = cards.setdefault(
+            name,
+            {
+                "platform": name,
+                "fund_count": 0,
+                "market_value": 0.0,
+                "cost": 0.0,
+                "profit": 0.0,
+                "realized": 0.0,
+                "total_profit": 0.0,
+            },
+        )
+        card["fund_count"] += 1
+        card["market_value"] += position["market_value"]
+        card["cost"] += position["cost"]
+        card["profit"] += position["profit"]
+        card["realized"] += position["realized_profit"]
+        card["total_profit"] += position["total_profit"]
+    return sorted(cards.values(), key=lambda item: item["market_value"], reverse=True)
 
 
 def nav_sync_pz_for_fund(session: Session, fund_code: str, full_pz: int) -> int:
@@ -1162,7 +1363,10 @@ def auto_post_candidates(session: Session, candidates: list[TransactionCandidate
         normalize_candidate_for_posting(session, candidate, nav_sync_attempts, rule_sync_attempts)
         if candidate_is_auto_ready(candidate):
             post_candidate(session, candidate)
-            posted += 1
+            if candidate.status == CandidateStatus.ignored:
+                skipped += 1
+            else:
+                posted += 1
         else:
             candidate.status = CandidateStatus.needs_review
             session.add(candidate)
@@ -1176,6 +1380,14 @@ def post_candidate(session: Session, candidate: TransactionCandidate) -> FundTra
         existing = session.get(FundTransaction, candidate.posted_transaction_id)
         if existing:
             return existing
+    existing_auto_dividend = find_matching_auto_dividend_transaction(session, candidate)
+    if existing_auto_dividend:
+        candidate.status = CandidateStatus.ignored
+        candidate.review_reason = "已由系统分红同步入账"
+        candidate.posted_transaction_id = existing_auto_dividend.id
+        candidate.updated_at = now_shanghai_naive()
+        session.add(candidate)
+        return existing_auto_dividend
     tx = FundTransaction(
         candidate_id=candidate.id,
         fund_code=candidate.fund_code,
@@ -1199,6 +1411,29 @@ def post_candidate(session: Session, candidate: TransactionCandidate) -> FundTra
     candidate.updated_at = now_shanghai_naive()
     session.add(candidate)
     return tx
+
+
+def find_matching_auto_dividend_transaction(session: Session, candidate: TransactionCandidate) -> FundTransaction | None:
+    if candidate.action not in {TransactionAction.dividend, TransactionAction.dividend_reinvest}:
+        return None
+    if not candidate.fund_code or not candidate.trade_date:
+        return None
+    txs = session.exec(
+        select(FundTransaction).where(
+            FundTransaction.fund_code == candidate.fund_code,
+            FundTransaction.trade_date == candidate.trade_date,
+            FundTransaction.action == candidate.action,
+            FundTransaction.source_file == "auto_dividend_sync",
+        )
+    ).all()
+    for tx in txs:
+        if candidate.action == TransactionAction.dividend:
+            if candidate.amount_cny is None or tx.amount_cny is None or abs((candidate.amount_cny or 0) - (tx.amount_cny or 0)) <= 0.02:
+                return tx
+        if candidate.action == TransactionAction.dividend_reinvest:
+            if candidate.share is None or tx.share is None or abs((candidate.share or 0) - (tx.share or 0)) <= 0.02:
+                return tx
+    return None
 
 
 def post_event(session: Session, candidate: TransactionCandidate) -> FundEvent:

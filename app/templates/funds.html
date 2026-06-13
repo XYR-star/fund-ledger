@@ -20,11 +20,29 @@
 </section>
 <section class="table-wrap" style="margin-top:12px">
   <table>
-    <thead><tr><th>代码</th><th>名称</th><th>类型</th><th>确认</th><th>Cutoff</th><th>买入费率</th><th>操作</th></tr></thead>
+    <thead><tr><th>代码</th><th>名称</th><th>类型</th><th>确认</th><th>Cutoff</th><th>买入费率</th><th>平台</th><th>分红方式</th><th>操作</th></tr></thead>
     <tbody>
       {% for r in rules %}
       <tr>
         <td>{{ r.fund_code }}</td><td>{{ r.fund_name }}</td><td>{{ r.fund_type.value }}</td><td>T+{{ r.buy_confirm_days }}/T+{{ r.sell_confirm_days }}</td><td>{{ r.cutoff_time }}</td><td>{{ r.buy_fee_rate }}</td>
+        <td>
+          <form method="post" action="/fund-rules/{{ r.fund_code }}/classify" class="actions">
+            <input name="platform" value="{{ r.platform }}" placeholder="未分类" style="width:96px">
+            <input type="hidden" name="dividend_method" value="{{ r.dividend_method }}">
+            <button class="btn small" type="submit">保存</button>
+          </form>
+        </td>
+        <td>
+          <form method="post" action="/fund-rules/{{ r.fund_code }}/classify" class="actions">
+            <input type="hidden" name="platform" value="{{ r.platform }}">
+            <select name="dividend_method" style="width:112px">
+              <option value="" {% if not r.dividend_method %}selected{% endif %}>未设置</option>
+              <option value="现金分红" {% if r.dividend_method == "现金分红" %}selected{% endif %}>现金分红</option>
+              <option value="红利再投资" {% if r.dividend_method == "红利再投资" %}selected{% endif %}>红利再投资</option>
+            </select>
+            <button class="btn small" type="submit">保存</button>
+          </form>
+        </td>
         <td class="actions">
           <form method="post" action="/fund-rules/{{ r.fund_code }}/sync"><button class="btn small" type="submit">同步规则</button></form>
           <form method="post" action="/funds/{{ r.fund_code }}/sync-nav"><button class="btn small" type="submit">同步净值</button></form>

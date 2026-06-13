@@ -29,6 +29,7 @@ def app_ctx(tmp_path, monkeypatch):
     SQLModel.metadata.create_all(app.db.engine)
     monkeypatch.setattr(app.main, "search_fund_safely", lambda *_: None)
     monkeypatch.setattr(app.main, "sync_nav_for_fund", lambda *_args, **_kwargs: (0, "disabled in tests"))
+    monkeypatch.setattr(app.main, "fetch_public_dividend_rows", lambda *_args, **_kwargs: [])
 
     with TestClient(app.main.app) as client:
         client.post("/login", data={"username": "admin", "password": "changeme"})
@@ -804,6 +805,129 @@ def test_holdings_label_holding_and_total_profit(app_ctx):
     assert response.status_code == 200
     assert "持仓收益" in response.text
     assert "累计收益" in response.text
+
+
+def test_sync_public_dividend_reinvests_once_and_skips_duplicates(app_ctx, monkeypatch):
+    main, db, _ = app_ctx
+    from app.models import FundNav, FundRule, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        rule = session.get(FundRule, "005827")
+        rule.dividend_method = "红利再投资"
+        session.add(rule)
+        session.add(FundNav(fund_code="005827", nav_date=date(2024, 1, 10), unit_nav=2.0))
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(
+            main,
+            "fetch_public_dividend_rows",
+            lambda years: [
+                {
+                    "fund_code": "005827",
+                    "fund_name": "易方达蓝筹精选混合",
+                    "register_date": date(2024, 1, 10),
+                    "dividend_per_share": 0.1,
+                }
+            ],
+        )
+
+        result = main.sync_active_fund_dividends(session, years=[2024])
+        assert result["posted"] == 1
+
+        tx = session.exec(select(FundTransaction).where(FundTransaction.action == TransactionAction.dividend_reinvest)).one()
+        assert tx.source_file == "auto_dividend_sync"
+        assert tx.share == 5.0
+        assert tx.amount_cny is None
+        assert tx.nav == 2.0
+
+        result = main.sync_active_fund_dividends(session, years=[2024])
+        assert result["posted"] == 0
+        assert len(session.exec(select(FundTransaction).where(FundTransaction.action == TransactionAction.dividend_reinvest)).all()) == 1
+
+
+def test_later_ocr_dividend_matching_auto_sync_is_ignored(app_ctx):
+    main, db, _ = app_ctx
+    from app.models import CandidateStatus, FundTransaction, TransactionAction, TransactionCandidate
+
+    with Session(db.engine) as session:
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 10),
+                action=TransactionAction.dividend_reinvest,
+                share=5.0,
+                nav=2.0,
+                source_file="auto_dividend_sync",
+            )
+        )
+        candidate = TransactionCandidate(
+            status=CandidateStatus.auto_ready,
+            row_status=main.RowStatus.success,
+            fund_code="005827",
+            fund_name="易方达蓝筹精选混合",
+            fund_type=main.FundType.open_fund,
+            trade_date=date(2024, 1, 10),
+            action=TransactionAction.dividend_reinvest,
+            share=5.0,
+            nav=2.0,
+            raw_text="红利再投资 易方达蓝筹 5.00 成功",
+        )
+        session.add(candidate)
+        session.commit()
+
+        main.post_candidate(session, candidate)
+        session.commit()
+
+        transactions = session.exec(select(FundTransaction)).all()
+        assert len(transactions) == 1
+        assert candidate.status == CandidateStatus.ignored
+        assert candidate.review_reason == "已由系统分红同步入账"
+        assert candidate.posted_transaction_id == transactions[0].id
+
+
+def test_holdings_show_manual_platform_cards(app_ctx):
+    main, db, client = app_ctx
+    from app.models import FundRule, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        rule = session.get(FundRule, "005827")
+        rule.platform = "易方达"
+        session.add(rule)
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.commit()
+
+    response = client.get("/holdings")
+    assert response.status_code == 200
+    assert "基金平台" in response.text
+    assert "易方达 · 1 只" in response.text
+    assert "持仓收益" in response.text
 
 
 def test_sell_without_prior_buy_is_marked_incomplete(app_ctx):

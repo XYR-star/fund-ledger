@@ -1,7 +1,13 @@
 {% extends "base.html" %}
 {% block title %}持仓 - Fund Ledger{% endblock %}
 {% block content %}
-<div class="page-title"><div><h1>持仓</h1><p class="muted">仅统计场外非货币基金。</p></div></div>
+<div class="page-title">
+  <div><h1>持仓</h1><p class="muted">仅统计场外非货币基金。</p></div>
+  <form method="post" action="/dividends/sync"><button class="btn" type="submit">同步分红</button></form>
+</div>
+{% if message %}
+<section class="panel" style="margin-bottom:12px">{{ message }}</section>
+{% endif %}
 <section class="metrics">
   <div class="metric"><span>市值</span><strong>{{ "%.2f"|format(totals.market_value) }}</strong></div>
   <div class="metric"><span>成本</span><strong>{{ "%.2f"|format(totals.cost) }}</strong></div>
@@ -9,6 +15,21 @@
   <div class="metric"><span>累计收益</span><strong>{{ "%.2f"|format(totals.total_profit) }}</strong></div>
   <div class="metric"><span>已实现</span><strong>{{ "%.2f"|format(totals.realized) }}</strong></div>
 </section>
+{% if platform_cards %}
+<section style="margin-top:12px">
+  <h2>基金平台</h2>
+  <div class="metrics">
+    {% for card in platform_cards %}
+    <div class="metric">
+      <span>{{ card.platform }} · {{ card.fund_count }} 只</span>
+      <strong>{{ "%.2f"|format(card.market_value) }}</strong>
+      <span class="muted">成本 {{ "%.2f"|format(card.cost) }}</span>
+      <span class="muted">持仓收益 {{ "%.2f"|format(card.profit) }} / 累计 {{ "%.2f"|format(card.total_profit) }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 <section class="table-wrap" style="margin-top:12px">
   <table>
     <thead><tr><th>基金</th><th>份额</th><th>成本</th><th>单位成本</th><th>最新净值</th><th>市值</th><th>持仓收益</th><th>累计收益</th><th>收益率</th></tr></thead>
