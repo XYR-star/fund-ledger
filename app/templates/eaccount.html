@@ -17,6 +17,15 @@
 </section>
 
 {% if latest %}
+<section class="panel stack" style="margin-top:12px">
+  <div class="actions" style="justify-content:space-between">
+    <div>
+      <h2>版本 #{{ latest.id }}</h2>
+      <p class="muted">{{ latest.file_name }} · {{ latest.imported_at }}</p>
+    </div>
+    <a class="btn small" href="/eaccount">查看最新版</a>
+  </div>
+</section>
 <section class="metrics" style="margin-top:12px">
   <div class="metric"><span>导入行数</span><strong>{{ latest.row_count }}</strong></div>
   <div class="metric"><span>匹配</span><strong>{{ latest.matched_count }}</strong></div>
@@ -55,10 +64,18 @@
 {% if imports %}
 <section class="table-wrap" style="margin-top:12px">
   <table>
-    <thead><tr><th>历史导入</th><th>行数</th><th>匹配</th><th>差异</th><th>缺失</th><th>时间</th></tr></thead>
+    <thead><tr><th>版本</th><th>文件</th><th>行数</th><th>匹配</th><th>差异</th><th>缺失</th><th>时间</th></tr></thead>
     <tbody>
       {% for item in imports %}
-      <tr><td>{{ item.file_name }}</td><td>{{ item.row_count }}</td><td>{{ item.matched_count }}</td><td>{{ item.mismatch_count }}</td><td>{{ item.missing_count }}</td><td>{{ item.imported_at }}</td></tr>
+      <tr>
+        <td><a href="/eaccount/{{ item.id }}">版本 #{{ item.id }}</a></td>
+        <td>{{ item.file_name }}</td>
+        <td>{{ item.row_count }}</td>
+        <td>{{ item.matched_count }}</td>
+        <td>{{ item.mismatch_count }}</td>
+        <td>{{ item.missing_count }}</td>
+        <td>{{ item.imported_at }}</td>
+      </tr>
       {% endfor %}
     </tbody>
   </table>

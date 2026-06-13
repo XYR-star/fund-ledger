@@ -181,8 +181,31 @@ def eaccount_page(
     _: str = Depends(require_user),
     session: Session = Depends(get_session),
 ):
+    return render_eaccount_page(request, session, message=message)
+
+
+@app.get("/eaccount/{import_id}", response_class=HTMLResponse)
+def eaccount_version_page(
+    import_id: int,
+    request: Request,
+    message: str = "",
+    _: str = Depends(require_user),
+    session: Session = Depends(get_session),
+):
+    selected = session.get(EAccountImport, import_id)
+    if not selected:
+        raise HTTPException(status_code=404)
+    return render_eaccount_page(request, session, message=message, selected=selected)
+
+
+def render_eaccount_page(
+    request: Request,
+    session: Session,
+    message: str = "",
+    selected: EAccountImport | None = None,
+):
     imports = session.exec(select(EAccountImport).order_by(desc(EAccountImport.imported_at))).all()
-    latest = imports[0] if imports else None
+    latest = selected or (imports[0] if imports else None)
     holdings = (
         session.exec(select(EAccountHolding).where(EAccountHolding.import_id == latest.id).order_by(EAccountHolding.status.desc(), EAccountHolding.fund_code)).all()
         if latest

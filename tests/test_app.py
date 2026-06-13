@@ -1063,6 +1063,50 @@ def test_eaccount_import_marks_mismatched_holdings(app_ctx):
         assert "份额差异" in holding.issue_summary
 
 
+def test_eaccount_versions_keep_each_import_and_can_be_reopened(app_ctx):
+    main, db, client = app_ctx
+    from app.models import EAccountImport, FundTransaction, TransactionAction
+
+    with Session(db.engine) as session:
+        seed_open_fund(session, main)
+        session.add(
+            FundTransaction(
+                fund_code="005827",
+                fund_name="易方达蓝筹精选混合",
+                fund_type=main.FundType.open_fund,
+                trade_date=date(2024, 1, 2),
+                action=TransactionAction.buy,
+                amount_cny=100,
+                share=100,
+                nav=1,
+            )
+        )
+        session.commit()
+
+    headers = "基金代码,基金名称,持有份额,份额日期,基金净值,净值日期,结算市值"
+    first = f"{headers}\n005827,易方达蓝筹精选混合,100.00,2024-01-02,2.50,2024-01-04,250.00"
+    second = f"{headers}\n005827,易方达蓝筹精选混合,98.00,2024-01-03,2.50,2024-01-04,245.00"
+    client.post("/eaccount/import", files={"file": ("v1.csv", first.encode("utf-8"), "text/csv")})
+    client.post("/eaccount/import", files={"file": ("v2.csv", second.encode("utf-8"), "text/csv")})
+
+    with Session(db.engine) as session:
+        versions = session.exec(select(EAccountImport).order_by(EAccountImport.id)).all()
+        first_id, second_id = versions[0].id, versions[1].id
+
+    latest_page = client.get("/eaccount")
+    assert latest_page.status_code == 200
+    assert f"版本 #{second_id}" in latest_page.text
+    assert f'href="/eaccount/{first_id}"' in latest_page.text
+    assert f'href="/eaccount/{second_id}"' in latest_page.text
+
+    first_page = client.get(f"/eaccount/{first_id}")
+    assert first_page.status_code == 200
+    assert f"版本 #{first_id}" in first_page.text
+    assert "v1.csv" in first_page.text
+    assert "v2.csv" in first_page.text
+    assert "250.00" in first_page.text
+
+
 def test_sell_without_prior_buy_is_marked_incomplete(app_ctx):
     main, db, _ = app_ctx
     from app.models import FundNav, FundTransaction, TransactionAction
