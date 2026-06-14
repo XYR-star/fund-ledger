@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import bindparam, text
 from sqlmodel import Session, desc, select
 
-from .models import FundNav, FundRule, FundTransaction, TransactionAction
+from .models import FundNav, FundRule, FundTransaction, FundType, TransactionAction
 
 EPS_SHARE = 0.5
 EPS_COST = 1.0
@@ -40,7 +40,7 @@ def money_fund_codes(session: Session) -> set[str]:
     return {
         rule.fund_code
         for rule in session.exec(select(FundRule)).all()
-        if "货币" in (rule.fund_type or "")
+        if rule.fund_type in {FundType.money_fund, FundType.etf}
     }
 
 
