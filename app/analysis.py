@@ -34,6 +34,7 @@ class AnalysisReport:
     contribution_losers: list[dict]
     platform_rows: list[dict]
     cash_flow_rows: list[dict]
+    money_fund_rows: list[dict]
     pending_items: list[AnalysisItem]
 
 
@@ -97,10 +98,12 @@ def build_analysis_report(session: Session) -> AnalysisReport:
     winners = sorted(contribution_rows, key=lambda item: item["total_profit"], reverse=True)[:5]
     losers = sorted(contribution_rows, key=lambda item: item["total_profit"])[:5]
 
+    money_fund_rows = _money_fund_rows(session, latest_import)
+    transfer_money_codes = {row["fund_code"] for row in money_fund_rows if row["role"] == "transfer_vehicle"}
     platform_rows = _platform_rows(active)
-    cash_flow_rows = _cash_flow_rows(session)
+    cash_flow_rows = _cash_flow_rows(session, excluded_fund_codes=transfer_money_codes)
     pending_items = _pending_items(latest_eaccount_issues, needs_review, errored_imports, unknown_rules, missing_nav_positions)
-    return AnalysisReport(health, returns, winners, losers, platform_rows, cash_flow_rows, pending_items)
+    return AnalysisReport(health, returns, winners, losers, platform_rows, cash_flow_rows, money_fund_rows, pending_items)
 
 
 def _platform_rows(active) -> list[dict]:
@@ -116,10 +119,13 @@ def _platform_rows(active) -> list[dict]:
     return sorted(grouped.values(), key=lambda item: item["market_value"], reverse=True)
 
 
-def _cash_flow_rows(session: Session) -> list[dict]:
+def _cash_flow_rows(session: Session, excluded_fund_codes: set[str] | None = None) -> list[dict]:
+    excluded_fund_codes = excluded_fund_codes or set()
     rows: dict[str, dict] = defaultdict(lambda: {"month": "", "buy": 0.0, "sell": 0.0, "dividend": 0.0, "reinvest": 0.0, "net": 0.0})
     txs = session.exec(select(FundTransaction).order_by(FundTransaction.trade_date)).all()
     for tx in txs:
+        if tx.fund_code in excluded_fund_codes:
+            continue
         month = tx.trade_date.strftime("%Y-%m")
         row = rows[month]
         row["month"] = month
@@ -133,6 +139,70 @@ def _cash_flow_rows(session: Session) -> list[dict]:
             row["reinvest"] += tx.amount_cny or 0.0
         row["net"] = row["buy"] - row["sell"]
     return sorted(rows.values(), key=lambda item: item["month"], reverse=True)[:12]
+
+
+def _money_fund_rows(session: Session, latest_import: EAccountImport | None) -> list[dict]:
+    rules = {
+        rule.fund_code: rule
+        for rule in session.exec(select(FundRule).where(FundRule.fund_type == FundType.money_fund)).all()
+    }
+    txs = session.exec(select(FundTransaction).where(FundTransaction.fund_type == FundType.money_fund).order_by(FundTransaction.trade_date, FundTransaction.id)).all()
+    local = defaultdict(lambda: {"fund_name": "", "share": 0.0})
+    for tx in txs:
+        rules.setdefault(tx.fund_code, FundRule(fund_code=tx.fund_code, fund_name=tx.fund_name, fund_type=FundType.money_fund))
+        row = local[tx.fund_code]
+        if tx.fund_name:
+            row["fund_name"] = tx.fund_name
+        amount_as_share = tx.share if tx.share is not None else (tx.amount_cny or 0.0)
+        if tx.action in {TransactionAction.buy, TransactionAction.dividend_reinvest}:
+            row["share"] += amount_as_share or 0.0
+        elif tx.action == TransactionAction.sell:
+            row["share"] -= amount_as_share or 0.0
+
+    official_shares: dict[str, float] = {}
+    if latest_import and latest_import.id:
+        holdings = session.exec(
+            select(EAccountHolding).where(EAccountHolding.import_id == latest_import.id)
+        ).all()
+        for holding in holdings:
+            if not holding.fund_code:
+                continue
+            official_shares[holding.fund_code] = official_shares.get(holding.fund_code, 0.0) + (holding.official_share or 0.0)
+
+    rows = []
+    for code in sorted(rules):
+        rule = rules[code]
+        local_share = round(local[code]["share"], 2) if code in local else 0.0
+        official_share = official_shares.get(code)
+        fund_name = rule.fund_name or local[code]["fund_name"]
+        if official_share and official_share > 0.5:
+            role = "cash_holding"
+            role_label = "真实持有"
+            note = "后续接入万份收益后计算货币基金收益"
+        elif latest_import:
+            role = "transfer_vehicle"
+            role_label = "中转通道"
+            note = "最新 E 账户无份额，按申购费中转货币基金处理"
+        elif local_share > 0.5:
+            role = "cash_holding"
+            role_label = "真实持有"
+            note = "尚无 E 账户快照，暂按本地货币持仓处理"
+        else:
+            role = "transfer_vehicle"
+            role_label = "中转通道"
+            note = "本地份额已清零，按中转通道处理"
+        rows.append(
+            {
+                "fund_code": code,
+                "fund_name": fund_name,
+                "role": role,
+                "role_label": role_label,
+                "local_share": local_share,
+                "official_share": official_share,
+                "note": note,
+            }
+        )
+    return rows
 
 
 def _pending_items(eaccount_issues, needs_review, errored_imports, unknown_rules, missing_nav_positions) -> list[AnalysisItem]:

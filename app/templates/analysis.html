@@ -82,6 +82,29 @@
   </article>
 </section>
 
+<section class="panel stack" style="margin-top:16px">
+  <h2>货币基金识别</h2>
+  <p class="muted">中转通道不计普通收益；真实持有后续按每日万份收益计算。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>基金</th><th>角色</th><th>本地份额</th><th>E 账户份额</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for row in report.money_fund_rows %}
+        <tr>
+          <td><a href="/funds/{{ row.fund_code }}">{{ row.fund_name }} {{ row.fund_code }}</a></td>
+          <td><span class="badge">{{ row.role_label }}</span></td>
+          <td>{{ "%.2f"|format(row.local_share) }}</td>
+          <td>{{ "%.2f"|format(row.official_share) if row.official_share is not none else "-" }}</td>
+          <td class="muted">{{ row.note }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="muted">暂无货币基金流水或规则。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <section class="analysis-grid" style="margin-top:16px">
   <article class="panel stack">
     <h2>平台分析</h2>
